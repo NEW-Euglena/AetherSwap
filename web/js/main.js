@@ -297,9 +297,16 @@ async function refreshInventory(forceRefresh = true) {
     inventoryRefreshInFlight = false;
   }
 }
-async function refreshMarketPrices() {
+async function refreshMarketPrices(btn = null) {
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "刷新中...";
+  }
   try {
     const d = await fetchJson(API + "/market-prices");
+    if (d.error && btn) {
+      toast("刷新价格提示", d.error);
+    }
     const prices = d.prices || {};
     if (Object.keys(prices).length === 0) return;
     const invItems = getInventoryCache();
@@ -342,6 +349,12 @@ async function refreshMarketPrices() {
       refreshTransactions();
     }
   } catch (e) {
+    if (btn) toast("刷新价格失败", e.message || "");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "刷新价格";
+    }
   }
 }
 function getInventoryCache() {
@@ -737,6 +750,9 @@ function bindEvents() {
   el("btn-holdings-multiselect")?.addEventListener("click", () => {
     holdingsMultiSelectMode = !holdingsMultiSelectMode;
     refreshTransactions();
+  });
+  el("btn-holdings-refresh-prices")?.addEventListener("click", (e) => {
+    refreshMarketPrices(e.target);
   });
   el("btn-history-multiselect")?.addEventListener("click", () => {
     historyMultiSelectMode = !historyMultiSelectMode;

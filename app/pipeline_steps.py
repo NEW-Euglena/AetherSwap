@@ -605,6 +605,10 @@ def _do_payment_notify_and_wait(
     is_stop_requested: callable,
     log_fn: Optional[Callable[[str, str], None]],
     on_entering_payment: Optional[Callable[[], None]] = None,
+    buff_client: Optional[Any] = None,
+    goods_id: int = 0,
+    start_time: float = 0.0,
+    is_batch: bool = False,
 ) -> bool:
     """Handle notification and wait for user payment confirmation.
     Returns True if user confirmed, False on cancel/timeout/stop.
@@ -651,18 +655,83 @@ def _do_payment_notify_and_wait(
     email_user = (notify_cfg.get("email_user") or "").strip()
     email_pass = (notify_cfg.get("email_pass") or "").strip()
     timeout_sec = int(notify_cfg.get("email_timeout_seconds", 300))
+    auto_detect = notify_cfg.get("auto_detect_payment", True)
+
     if email_user and email_pass:
         def _email_waiter() -> None:
             res = wait_email_command(config, timeout_seconds=timeout_sec, is_stop_requested=is_stop_requested, log_fn=log_fn)
             confirm_payment(res == "success")
         t = threading.Thread(target=_email_waiter, daemon=True)
         t.start()
-        ok = wait_payment_confirm()
-    else:
-        ok = wait_payment_confirm(timeout_seconds=timeout_sec)
+
+    if auto_detect and buff_client and goods_id > 0:
+        def _auto_detect_waiter() -> None:
+            from buff.buyer import BuffVerificationRequired
+            if log_fn:
+                log_fn(f"[Buff]   → 自动检测开启，等待15秒后开始轮询支付状态 (order_id={order_id})", "info")
+            # 初始等待：留给 Buff 服务器时间将订单写入历史列表
+            wait_start = time.time()
+            while time.time() - wait_start < 15:
+                if is_stop_requested():
+                    return
+                time.sleep(1)
+            
+            consecutive_misses = 0
+            poll_count = 0
+            while not is_stop_requested():
+                poll_count += 1
+                try:
+                    res = buff_client.check_payment_status(
+                        order_id=order_id, 
+                        goods_id=goods_id, 
+                        start_time=start_time, 
+                        is_batch=is_batch
+                    )
+                    if log_fn:
+                        log_fn(f"[Buff]   → 自动检测轮询#{poll_count} order_id={order_id} 结果={res}", "debug")
+                    if res is True:
+                        if log_fn:
+                            log_fn("[Buff]   → 自动检测：订单已付款！", "info")
+                        confirm_payment(True)
+                        return
+                    elif res is False:
+                        if log_fn:
+                            log_fn("[Buff]   → 自动检测：订单已被取消", "warn")
+                        confirm_payment(False)
+                        return
+                    elif res == "NOT_FOUND":
+                        consecutive_misses += 1
+                        if log_fn:
+                            log_fn(f"[Buff]   → 自动检测：未在历史列表找到订单 ({consecutive_misses}/5)", "debug")
+                        if consecutive_misses >= 5:
+                            if log_fn:
+                                log_fn("[Buff]   → 连续5次未找到该订单状态，判定为放弃", "warn")
+                            confirm_payment(False)
+                            return
+                    else:
+                        # res is None: 订单存在但状态为未付款，继续等待
+                        consecutive_misses = 0
+                except BuffVerificationRequired as e:
+                    if log_fn:
+                        log_fn(f"[Buff]   → 自动检测触发验证: {e}，紧急挂起，请手动确认", "warn")
+                    return
+                except Exception as e:
+                    if log_fn:
+                        log_fn(f"[Buff]   → 自动检测异常: {e}", "debug")
+                
+                # 每次轮询间隔 15 秒
+                for _ in range(15):
+                    if is_stop_requested():
+                        return
+                    time.sleep(1)
+
+        t_auto = threading.Thread(target=_auto_detect_waiter, daemon=True)
+        t_auto.start()
+
+    ok = wait_payment_confirm(timeout_seconds=timeout_sec)
     set_pending_payment(None)
     if log_fn:
-        log_fn(f"[Buff]   → 用户确认={'成功' if ok else '取消/失败'}", "info")
+        log_fn(f"[Buff]   → 用户付款确认最终结果={'成功' if ok else '取消/失败'}", "info")
     return ok
 def _do_batch_wait_finalize_and_append(
     buff_client: Any,
@@ -688,6 +757,7 @@ def _do_batch_wait_finalize_and_append(
         item, config, unit_price, num, pay_url, "wechat", batch_id, acc,
         set_pending_payment, wait_payment_confirm, confirm_payment,
         is_stop_requested, log_fn, on_entering_payment,
+        buff_client=buff_client, goods_id=goods_id, start_time=time.time(), is_batch=True
     )
     if is_stop_requested() or not ok:
         return None
@@ -718,7 +788,7 @@ def _do_batch_wait_finalize_and_append(
     if bill_order_ids:
         try:
             if buff_client.ask_seller_to_send(bill_order_ids, game_buff) and log_fn:
-                log_fn("[Buff]   → 已提醒卖家发货，请留意 Steam 报价", "info")
+                log_fn("[Buff]   → 已请求发货/推送交易，请留意 Buff 及 Steam 报价", "info")
             elif log_fn:
                 log_fn("[Buff]   → 提醒卖家发货未成功（可稍后在订单页手动催发货）", "warn")
         except (BuffAuthExpired, BuffVerificationRequired):
@@ -752,6 +822,7 @@ def _do_wait_payment_and_append(
         item, config, unit_price, num, pay_url, pay_type, order_id, acc,
         set_pending_payment, wait_payment_confirm, confirm_payment,
         is_stop_requested, log_fn, on_entering_payment,
+        buff_client=buff_client, goods_id=goods_id, start_time=time.time(), is_batch=False
     )
     if is_stop_requested() or not ok:
         return None
@@ -766,7 +837,7 @@ def _do_wait_payment_and_append(
         append_purchase(dict(base_rec))
     try:
         if buff_client.ask_seller_to_send(order_id, game_buff) and log_fn:
-            log_fn("[Buff]   → 已提醒卖家发货，请留意 Steam 报价", "info")
+            log_fn("[Buff]   → 已请求发货/推送交易，请留意 Buff 及 Steam 报价", "info")
         elif log_fn:
             log_fn("[Buff]   → 提醒卖家发货未成功（可稍后在订单页手动催发货）", "warn")
     except (BuffAuthExpired, BuffVerificationRequired):

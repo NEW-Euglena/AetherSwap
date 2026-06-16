@@ -12,7 +12,7 @@ except ImportError:
     HAS_WEBVIEW = False
 import uvicorn
 HOST = "127.0.0.1"
-PORT = 28472
+PORT = 28473
 URL = f"http://{HOST}:{PORT}"
 def run_server():
     uvicorn.run(
@@ -41,12 +41,9 @@ def main():
     if HAS_WEBVIEW:
         webview.create_window("aetherswap", URL, width=1280, height=800, zoomable=True, maximized=True)
         webview.start()
-        print(f"窗口已关闭，后端仍在运行。在浏览器打开 {URL} 可继续查看状态。按 Ctrl+C 退出。")
-        try:
-            while t.is_alive():
-                t.join(timeout=1)
-        except KeyboardInterrupt:
-            pass
+        print("窗口已关闭，系统正在退出进程...")
+        import os
+        os._exit(0)
     else:
         webbrowser.open(URL)
         try:

@@ -230,7 +230,8 @@ function applyTransactionsToUI(all, summaryEl, tbodyP, tbodyS, tbodyHistory, res
       totalCashProfit += afterTax * ratio - cost;
       totalSelfUseProfit += afterTax - cost;
     });
-    const discountRatio = ratioCount > 0 ? (ratioSum / ratioCount).toFixed(4) : "—";
+    const soldCost = soldItems.reduce((s, t) => s + (Number(t.price) || 0), 0);
+    const discountRatio = totalAfterTax != null && totalAfterTax > 0 && soldCost > 0 ? (soldCost / totalAfterTax).toFixed(4) : "—";
     const discountRatioClass = discountRatio !== "—" ? (parseFloat(discountRatio) > ratio ? "text-bad" : "text-ok") : "";
     const cashProfitVal = soldItems.length > 0 ? totalCashProfit : null;
     const selfUseProfitVal = soldItems.length > 0 ? totalSelfUseProfit : null;
@@ -282,7 +283,7 @@ function applyTransactionsToUI(all, summaryEl, tbodyP, tbodyS, tbodyHistory, res
       totalCashProfit += afterTax * ratio - cost;
       totalSelfUseProfit += afterTax - cost;
     });
-    const discountRatio = ratioCount > 0 ? (ratioSum / ratioCount).toFixed(4) : "—";
+    const discountRatio = totalAfterTax != null && totalAfterTax > 0 && totalPrice > 0 ? (totalPrice / totalAfterTax).toFixed(4) : "—";
     const discountRatioClass = discountRatio !== "—" ? (parseFloat(discountRatio) > ratio ? "text-bad" : "text-ok") : "";
     const cashProfitVal = ratioCount > 0 ? totalCashProfit : null;
     const selfUseProfitVal = ratioCount > 0 ? totalSelfUseProfit : null;
