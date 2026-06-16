@@ -138,6 +138,141 @@ class BuffBuyer:
         except Exception as e:
             logger.exception("检查订单失败: %s", e)
         return False
+
+    def check_payment_status(self, order_id: Optional[str], goods_id: int, start_time: float, is_batch: bool, game: str = "csgo") -> Optional[bool]:
+        """
+        Check the status of a specific order or batch in the history list.
+        Returns:
+            True: if paid (wait_send, wait_receive, success)
+            False: if cancelled (cancel)
+            None: if unpaid (wait_pay/paying)
+            "NOT_FOUND": if not found (for retry tolerance)
+
+        双轨检测策略（针对微信支付）：
+        - 主轨：查询 buy_order/history（历史列表），用 order_id 精确匹配
+        - 副轨：当 history 找不到订单时，查询 bill_order/page_pay：
+            * 若 page_pay 返回非 OK 或数据为空 → 订单已离开"待付款"状态 → 判定为已付款
+            * 若 page_pay 返回 OK 且仍有数据 → 订单仍在等待付款 → 返回 None
+        """
+        params = {
+            "game": game,
+            "page_num": "1",
+            "page_size": "50",
+            "state": "",
+            "_": str(int(time.time() * 1000)),
+        }
+        # Note: BuffVerificationRequired will be automatically raised by _make_request if triggered.
+        res = self._make_request("GET", API_HISTORY, params=params)
+        items = res.get("data", {}).get("items", [])
+        
+        found_any = False
+        all_paid = True
+        has_cancelled = False
+        has_paying = False
+
+        for item in items:
+            match = False
+            if not is_batch and order_id:
+                if str(item.get("id", "")) == str(order_id):
+                    match = True
+            else:
+                item_goods_id = item.get("goods_id")
+                item_created_at = item.get("created_at", 0)
+                # 允许30秒的时钟误差容忍
+                if str(item_goods_id) == str(goods_id) and item_created_at >= (start_time - 30):
+                    match = True
+
+            if match:
+                found_any = True
+                state = item.get("state", "").upper()
+                if state in ("FAIL", "CANCEL", "CANCELLED", "CLOSED"):
+                    has_cancelled = True
+                elif state in ("PAYING", "WAIT_PAY", "UNPAID", "INIT"):
+                    has_paying = True
+                    all_paid = False
+                else:
+                    # 其他任何状态（wait_send/wait_receive/success 等）均视为已付款
+                    pass
+
+        if has_cancelled:
+            return False
+
+        if all_paid and found_any:
+            return True
+
+        # 以下两种情况都使用 page_pay 副轨判断：
+        # 1. NOT_FOUND：history 里完全找不到该订单（批量订单常见）
+        # 2. found 但 has_paying：订单在 history 里状态仍是 wait_pay，
+        #    page_pay 接口能更实时地反映付款是否已完成
+        if order_id:
+            try:
+                if is_batch:
+                    # 批量订单：用 batch_buy/wx_pay_qrcode 接口判断
+                    # 付款前该接口返回二维码 URL，付款后返回空或非 OK
+                    still_waiting = self._check_batch_pay_status(order_id, game)
+                else:
+                    # 单件订单：用 bill_order/page_pay 接口判断
+                    still_waiting = self._check_page_pay_status(order_id, game)
+                # False → 订单已离开待付款状态（已付款或已取消），判定为已付款
+                # True  → 订单仍在等待付款
+                if still_waiting is False:
+                    return True
+                return None  # 仍在等待付款
+            except Exception:
+                pass  # 副轨查询失败，回退
+
+        if not found_any:
+            return "NOT_FOUND"
+        return None  # 找到了但仍是 wait_pay，继续等待
+
+    def _check_page_pay_status(self, order_id: str, game: str = "csgo") -> bool:
+        """
+        【单件订单副轨】通过 bill_order/page_pay 接口查询订单是否仍在等待付款。
+        Returns:
+            True  → 订单仍处于待付款状态（接口返回有效倒计时）
+            False → 订单已离开待付款状态（接口返回非 OK 或无 pay_expire_timeout）
+        """
+        params = {
+            "bill_order_id": str(order_id),
+            "_": str(int(time.time() * 1000)),
+        }
+        h = {
+            "Referer": f"https://buff.163.com/market/buy_order/history?game={game}",
+        }
+        res = self._make_request("GET", API_PAGE_PAY, params=params, headers=h)
+        if res.get("code") != "OK":
+            # 接口返回非 OK，说明订单已不在待付款状态
+            return False
+        data = res.get("data", {})
+        # 没有 pay_expire_timeout 字段，视为订单已离开待付款状态
+        if not data or not data.get("pay_expire_timeout"):
+            return False
+        return True  # 接口仍返回有效付款信息，订单还在等待
+
+    def _check_batch_pay_status(self, batch_id: str, game: str = "csgo") -> bool:
+        """
+        【批量订单副轨】通过 batch_buy/wx_pay_qrcode 接口查询批量订单是否仍在等待付款。
+        付款前该接口返回二维码 URL；付款后接口返回非 OK 或空 URL。
+        Returns:
+            True  → 批量订单仍处于待付款状态（接口返回有效二维码）
+            False → 批量订单已离开待付款状态（接口返回非 OK 或无 URL）
+        """
+        params = {
+            "batch_buy_id": str(batch_id),
+            "_": str(int(time.time() * 1000)),
+        }
+        h = {"Referer": "https://buff.163.com/goods/0?from=market"}
+        res = self._make_request("GET", API_BATCH_WX_PAY_QRCODE, params=params, headers=h)
+        if res.get("code") != "OK":
+            # 接口返回非 OK，说明批量订单已不在待付款状态
+            return False
+        data = res.get("data", {})
+        url = data.get("url") or data.get("qrcode")
+        if not url:
+            # 接口返回 OK 但没有二维码 URL，说明订单已完成支付
+            return False
+        return True  # 接口返回有效二维码，订单还在等待付款
+
     def get_sell_orders(self, goods_id: int, game: str = "csgo") -> Optional[list]:
         params = {
             "game": str(game),

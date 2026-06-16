@@ -495,10 +495,13 @@
         <div class="panel-toolbar panel-toolbar--purchases">
           <div class="panel-toolbar-row">
             <span class="label">持有饰品</span>
-            <button id="btn-holdings-multiselect" class="btn btn-sm btn-secondary">多选</button>
-            <div id="holdings-batch-actions" class="hidden" style="display:none;gap:8px;align-items:center;">
-              <button id="btn-holdings-batch-sell" class="btn btn-sm btn-primary">批量出售</button>
-              <button id="btn-holdings-batch-del" class="btn btn-sm btn-danger-outline">批量删除</button>
+            <div class="panel-toolbar-actions" style="display: flex; gap: 8px; align-items: center;">
+              <button id="btn-holdings-multiselect" class="btn btn-sm btn-secondary">多选</button>
+              <button id="btn-holdings-refresh-prices" class="btn btn-sm btn-secondary">刷新价格</button>
+              <div id="holdings-batch-actions" class="hidden" style="display:none;gap:8px;align-items:center;">
+                <button id="btn-holdings-batch-sell" class="btn btn-sm btn-primary">批量出售</button>
+                <button id="btn-holdings-batch-del" class="btn btn-sm btn-danger-outline">批量删除</button>
+              </div>
             </div>
           </div>
           <div id="purchases-summary" class="purchases-summary"></div>

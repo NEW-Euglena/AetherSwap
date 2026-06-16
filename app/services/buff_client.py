@@ -43,6 +43,12 @@ class BuffClient:
         self._timeout = timeout_sec
     def get_sell_orders(self, goods_id: int, game: str = "csgo") -> Optional[list]:
         return self._buyer.get_sell_orders(goods_id, game)
+
+    def is_order_paid(self, order_id: str, game: str = "csgo") -> Optional[bool]:
+        return self._buyer.is_order_paid(order_id, game)
+        
+    def check_payment_status(self, order_id: Optional[str], goods_id: int, start_time: float, is_batch: bool, game: str = "csgo") -> Optional[bool]:
+        return self._buyer.check_payment_status(order_id, goods_id, start_time, is_batch, game)
     def get_goods_steam_price_cny(self, search_name: str, game: str = "csgo") -> Optional[float]:
         return self._buyer.get_goods_steam_price_cny(search_name, game)
     def ask_seller_to_send(self, bill_order_id_or_ids: Union[str, List[str]], game: str = "csgo") -> bool:
