@@ -228,7 +228,8 @@ def exchange_rate_worker() -> None:
             log(f"exchange_rate: worker 异常 {type(e).__name__}: {e}, 5 分钟后重试", "error", category="exchange_rate")
             time.sleep(300)
 def receive_worker() -> None:
-    from app.receive_flow import try_receive_once
+    from app.receive_flow import try_receive_c5_once, try_receive_once
+    from app.services.c5_client import create_c5_client_from_config
     while True:
         try:
             cfg = load_app_config_validated()
@@ -247,6 +248,16 @@ def receive_worker() -> None:
                 scan_inventory=scan_cs2_inventory,
                 update_purchase_by_id=update_purchase_by_id,
             )
+            if any((p.get("platform") or "").lower() == "c5" for p in purchases):
+                c5_cfg = cfg.get("c5") or {}
+                if (c5_cfg.get("app_key") or "").strip():
+                    n += try_receive_c5_once(
+                        get_purchases,
+                        update_purchase,
+                        get_steam_credentials,
+                        create_c5_client_from_config(cfg),
+                        update_purchase_by_id=update_purchase_by_id,
+                    )
             if n > 0:
                 log(f"receive_worker: 本轮收取到 {n} 件物品", "info", category="receive")
         except Exception as e:

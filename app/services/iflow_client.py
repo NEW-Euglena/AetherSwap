@@ -50,6 +50,10 @@ class IflowClient:
         else:
             platform_list = ["BUFF"]
 
+        cfg_platform = str(p.get("market_platform", "") or "").strip().upper()
+        if cfg_platform and cfg_platform not in platform_list:
+            platform_list = [cfg_platform] + platform_list
+
         query = SteamDTQueryParams(
             page=int(p.get("page_num", p.get("page", 1))),
             page_size=int(p.get("page_size", 200)),
@@ -58,15 +62,14 @@ class IflowClient:
             purchase_plan=p.get("purchase_plan", ""),
             sale_plan=p.get("sale_plan", "STEAM_SELL_PRICE"),
             min_sell_price=str(p.get("min_price", p.get("min_sell_price", "2"))),
-            max_sell_price=int(p.get("max_price", p.get("max_sell_price", 5000))),
+            max_sell_price=float(p.get("max_price", p.get("max_sell_price", 5000))),
             min_transaction_count=str(p.get("min_volume", p.get("min_transaction_count", "200"))),
             platform_list=platform_list,
             currency=p.get("currency", "CNY"),
             language=p.get("language", "zh_CN"),
         )
 
-        # Determine target platform for link extraction (use the first one)
-        target = platform_list[0] if platform_list else "BUFF"
+        target = cfg_platform if cfg_platform in platform_list else (platform_list[0] if platform_list else "BUFF")
 
         return fetch_steamdt_data(
             query,
@@ -97,6 +100,7 @@ def fetch_iflow_rows(config: dict) -> List[Any]:
         "page_num": iflow_cfg.get("page_num", 1),
         "page_size": int(iflow_cfg.get("page_size", 200)),
         "platforms": iflow_cfg.get("platforms", "buff"),
+        "market_platform": (config.get("market") or {}).get("platform", ""),
         "min_price": iflow_cfg.get("min_price", 2),
         "max_price": iflow_cfg.get("max_price", 5000),
         "min_volume": iflow_cfg.get("min_volume", 200),

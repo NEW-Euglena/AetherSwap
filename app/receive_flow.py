@@ -187,7 +187,10 @@ def try_receive_once(
     purchases = get_purchases()
     pending_records: List[dict] = [
         p for p in purchases
-        if p.get("pending_receipt") and not p.get("assetid") and p.get("_db_id")
+        if p.get("pending_receipt")
+        and not p.get("assetid")
+        and p.get("_db_id")
+        and (p.get("platform") or "buff").lower() != "c5"
     ]
     if not pending_records:
         return 0
@@ -222,7 +225,10 @@ def try_receive_once(
         purchases = get_purchases()
         pending_records = [
             p for p in purchases
-            if p.get("pending_receipt") and not p.get("assetid") and p.get("_db_id")
+            if p.get("pending_receipt")
+            and not p.get("assetid")
+            and p.get("_db_id")
+            and (p.get("platform") or "buff").lower() != "c5"
         ]
         assigned_db_ids: set = set()
         pairs: List[Tuple[dict, dict]] = []  
@@ -269,4 +275,65 @@ def try_receive_once(
                 _do_update(db_id, pos_idx, {"assetid": our_assetid, "pending_receipt": False})
                 already_used.add(our_assetid)
         jittered_sleep(1)
+    return received
+
+def try_receive_c5_once(
+    get_purchases: Callable[[], List[dict]],
+    update_purchase: Callable[[int, dict], bool],
+    get_steam_credentials: Callable[[], dict],
+    c5_client: Any,
+    update_purchase_by_id: Optional[Callable[[int, dict], bool]] = None,
+) -> int:
+    """检查 C5 待收货订单，能拿到 assetid 时补全本地记录。"""
+    purchases = get_purchases()
+    pending_records: List[dict] = [
+        p for p in purchases
+        if p.get("pending_receipt")
+        and not p.get("assetid")
+        and (p.get("platform") or "").lower() == "c5"
+        and p.get("order_id")
+    ]
+    if not pending_records:
+        return 0
+
+    steam_cred = get_steam_credentials()
+    steam_cookies_str = steam_cred.get("cookies") or ""
+    steam_cookies = _cookies_str_to_dict(steam_cookies_str)
+    session_id = (steam_cred.get("session_id") or "").strip()
+    if session_id:
+        steam_cookies["sessionid"] = session_id
+
+    received = 0
+    for p in pending_records:
+        db_id = p.get("_db_id") or 0
+        pos_idx = next(
+            (i for i, q in enumerate(purchases) if q.get("_db_id") == db_id),
+            -1,
+        )
+        try:
+            detail = c5_client.get_order_detail(str(p.get("order_id")), str(p.get("out_trade_no") or ""))
+        except Exception:
+            continue
+
+        new_asset_id = detail.get("newAssetId")
+        if new_asset_id:
+            data = {"assetid": str(new_asset_id), "pending_receipt": False}
+            ok = update_purchase_by_id(db_id, data) if update_purchase_by_id and db_id else update_purchase(pos_idx, data)
+            if ok:
+                received += 1
+            continue
+
+        offer_info = detail.get("offerInfoDTO") or {}
+        trade_offer_id = offer_info.get("tradeOfferId") or detail.get("tradeOfferId")
+        if not trade_offer_id:
+            continue
+        if not steam_cookies.get("sessionid") or not steam_cookies.get("steamLoginSecure"):
+            continue
+        if not accept_steam_trade_offer(str(trade_offer_id), steam_cookies):
+            continue
+
+        data = {"pending_receipt": False}
+        ok = update_purchase_by_id(db_id, data) if update_purchase_by_id and db_id else update_purchase(pos_idx, data)
+        if ok:
+            received += 1
     return received

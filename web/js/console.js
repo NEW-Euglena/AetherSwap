@@ -118,22 +118,12 @@ function toggleAutoScroll() {
   toast("自动滚动", autoScroll ? "开启" : "关闭");
 }
 function downloadLog() {
-  function fmtTime(t) {
-    if (t == null) return "";
-    const d = new Date(t * 1000);
-    return d.toTimeString().slice(0, 8);
-  }
-  const blob = new Blob([
-    logLines.map((x) => `${fmtTime(x.t)} [${x.level || "info"}] ${x.msg || ""}`).join("\n") + "\n",
-  ], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url;
-  a.download = `log_${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.txt`;
+  a.href = API + "/log/download";
+  a.download = "";
   document.body.appendChild(a);
   a.click();
   a.remove();
-  URL.revokeObjectURL(url);
   toast("已下载日志");
 }
 async function exportLog() {

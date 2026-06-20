@@ -1,6 +1,7 @@
 import json
 import threading
 import time
+from datetime import datetime
 from collections import deque
 from pathlib import Path
 from typing import Any, Deque, List, Optional
@@ -19,6 +20,23 @@ from app.database import (
     db_update_sale,
 )
 _LOG_MAXLEN = 500
+_LOG_DIR = Path("log")
+_LOG_WRITE_LOCK = threading.Lock()
+
+def _format_log_time(t: float) -> str:
+    return datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M:%S")
+
+def _append_log_file(entry: dict) -> None:
+    try:
+        _LOG_DIR.mkdir(exist_ok=True)
+        day = datetime.fromtimestamp(entry.get("t") or time.time()).strftime("%Y%m%d")
+        line = f"{_format_log_time(entry.get('t'))} [{entry.get('level', 'info')}] {entry.get('msg', '')}\n"
+        with _LOG_WRITE_LOCK:
+            with (_LOG_DIR / f"runtime_{day}.log").open("a", encoding="utf-8") as f:
+                f.write(line)
+    except Exception:
+        pass
+
 class State:
     _lock: threading.Lock
     _confirm: threading.Condition
@@ -130,14 +148,16 @@ class State:
     def log(self, msg: str, level: str = "info", category: str = "", flow_id: str = "") -> None:
         with self._lock:
             self._log_seq += 1
-            self._log.append({
+            entry = {
                 "id": self._log_seq,
                 "t": time.time(),
                 "level": level,
                 "msg": msg,
                 "category": category or "",
                 "flow_id": flow_id or "",
-            })
+            }
+            self._log.append(entry)
+        _append_log_file(entry)
     def get_log(self, since_idx: int = 0) -> list:
         with self._lock:
             out = list(self._log)
