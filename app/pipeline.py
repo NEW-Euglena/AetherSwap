@@ -12,6 +12,7 @@ from app.pipeline_steps import (
     TARGET_REACHED,
     SKIP_NO_FAILED,
     SKIP_VERIFICATION_FAILED,
+    c5_buy_and_record,
     filter_iflow_rows,
     lock_and_confirm_payment,
     pick_stable_item,
@@ -19,6 +20,7 @@ from app.pipeline_steps import (
 from app.services.iflow_client import fetch_iflow_rows
 from app.services.analysis_client import StabilityAnalyzer
 from app.services.buff_client import create_buff_client_from_config
+from app.services.c5_client import create_c5_client_from_config
 from app.services.steam_client import SteamClient
 from app.state import get_state, append_sale
 from app.strategy_engine import apply_strategy_to_config
@@ -63,7 +65,7 @@ def _fetch_and_filter_deals(ctx: PipelineContext, cfg: dict, retry_interval: int
             page=int(iflow_cfg.get("page_num", 1)),
             page_size=int(iflow_cfg.get("page_size", 200)),
             min_sell_price=str(iflow_cfg.get("min_price", 2)),
-            max_sell_price=int(iflow_cfg.get("max_price", 5000)),
+            max_sell_price=float(iflow_cfg.get("max_price", 5000)),
             min_transaction_count=str(iflow_cfg.get("min_volume", 200)),
         )
         ctx.debug(f"[详细流程] SteamDT 请求参数: page={q.page} pageSize={q.page_size} minPrice={q.min_sell_price} maxPrice={q.max_sell_price} minTx={q.min_transaction_count}")
@@ -94,17 +96,26 @@ def _process_deals_for_target(
     failed_goods_ids: set,
     skipped_this_round: set,
     stability_failed_this_round: set,
+    market_platform: str = "buff",
+    c5_client=None,
 ):
     acc = current_acc
     bought = total_bought
     n_filtered = len(filtered)
 
-    def buff_log(msg: str, level: str = "info") -> None:
-        ctx.log(msg, level, category="buff")
+    category = "c5" if market_platform == "c5" else "buff"
+
+    def market_log(msg: str, level: str = "info") -> None:
+        ctx.log(msg, level, category=category)
+
+    def item_skip_key(item: dict):
+        if market_platform == "c5":
+            return item.get("steam_market_name") or item.get("name")
+        return item.get("goods_id")
 
     while acc < target:
         if ctx.is_stop_requested():
-            ctx.log("用户请求停止", "warn", category="buff")
+            ctx.log("用户请求停止", "warn", category=category)
             ctx.set_status("stopped", "已停止")
             return acc, bought, True
 
@@ -113,7 +124,8 @@ def _process_deals_for_target(
             filtered, cfg, steam_client, analyzer, ctx.is_stop_requested,
             log_fn=ctx.log,
             exclude_goods_ids=failed_goods_ids | skipped_this_round | stability_failed_this_round,
-            buff_client=buyer,
+            buff_client=buyer if market_platform == "buff" else None,
+            c5_client=c5_client if market_platform == "c5" else None,
         )
         stability_failed_this_round |= new_stability_failed
 
@@ -125,54 +137,63 @@ def _process_deals_for_target(
         if acc >= target:
             break
 
-        ctx.log(f"购买本件: {chosen['name']} goods_id={chosen['goods_id']} 参考价={chosen.get('min_price')}", "info", category="buff")
+        ctx.log(f"购买本件: {chosen['name']} 平台={market_platform.upper()} 参考价={chosen.get('min_price')}", "info", category=category)
 
         def on_entering_payment() -> None:
             ctx.set_status("running", "CHECKOUT_PENDING", progress_item=chosen.get("name", ""))
 
-        paid = lock_and_confirm_payment(
-            buyer, chosen, cfg, target, acc,
-            ctx.state.set_pending_payment,
-            ctx.state.wait_payment_confirm,
-            ctx.state.confirm_payment,
-            ctx.state.is_stop_requested,
-            ctx.state.append_purchase,
-            log_fn=buff_log,
-            on_entering_payment=on_entering_payment,
-        )
+        if market_platform == "c5":
+            paid = c5_buy_and_record(
+                c5_client, chosen, cfg, target, acc,
+                ctx.state.is_stop_requested,
+                ctx.state.append_purchase,
+                log_fn=market_log,
+                on_entering_payment=on_entering_payment,
+            )
+        else:
+            paid = lock_and_confirm_payment(
+                buyer, chosen, cfg, target, acc,
+                ctx.state.set_pending_payment,
+                ctx.state.wait_payment_confirm,
+                ctx.state.confirm_payment,
+                ctx.state.is_stop_requested,
+                ctx.state.append_purchase,
+                log_fn=market_log,
+                on_entering_payment=on_entering_payment,
+            )
 
         if ctx.is_stop_requested():
             ctx.set_status("stopped", "已停止")
             return acc, bought, True
 
         if paid is TARGET_REACHED:
-            ctx.log("累计已达/超过目标，结束购买", "info", category="buff")
+            ctx.log("累计已达/超过目标，结束购买", "info", category=category)
             acc = target
             break
         if paid is SKIP_NO_FAILED:
-            gid = chosen.get("goods_id")
-            if gid is not None:
-                skipped_this_round.add(gid)
-            ctx.log("安全采购上限不足，跳过本件", "warn", category="buff")
+            key = item_skip_key(chosen)
+            if key is not None:
+                skipped_this_round.add(key)
+            ctx.log("安全采购上限不足，跳过本件", "warn", category=category)
             continue
         if paid is SKIP_VERIFICATION_FAILED:
-            gid = chosen.get("goods_id")
-            if gid is not None:
-                failed_goods_ids.add(gid)
-            ctx.log("二次验证未通过，跳过本件", "warn", category="buff")
+            key = item_skip_key(chosen)
+            if key is not None:
+                failed_goods_ids.add(key)
+            ctx.log("二次验证未通过，跳过本件", "warn", category=category)
             continue
         if paid is None:
-            gid = chosen.get("goods_id")
-            if gid is not None:
-                failed_goods_ids.add(gid)
-            ctx.log("锁单/确认未成功，跳过本件", "warn", category="buff")
+            key = item_skip_key(chosen)
+            if key is not None:
+                failed_goods_ids.add(key)
+            ctx.log("下单/确认未成功，跳过本件", "warn", category=category)
             continue
 
         acc += paid
         acc = round(acc, 2)
         bought += 1
         ctx.set_status("running", "CHECKOUT_PENDING", progress_done=bought, progress_item=chosen.get("name", ""))
-        ctx.log(f"已确认付款 本笔={paid:.2f} 累计={acc:.2f}/{target}", "info", category="buff")
+        ctx.log(f"已确认付款 本笔={paid:.2f} 累计={acc:.2f}/{target}", "info", category=category)
         if acc >= target:
             break
         ctx.debug("下一件将重新按 SteamDT 顺序试稳定性")
@@ -193,12 +214,28 @@ def _run_pipeline(config: dict) -> None:
 
     target = float(pipeline_cfg.get("target_balance", 100))
     exclude = pipeline_cfg.get("exclude_keywords", [])
+    market_platform = str((cfg.get("market") or {}).get("platform") or "buff").strip().lower()
     cred_buff = get_buff_credentials()
-    cookies_buff = cred_buff.get("cookies", "")
-    if not cookies_buff:
-        ctx.log("未配置 Buff cookies", "error", category="config")
-        ctx.set_status("error", "CONFIG_ERROR")
-        return
+    buyer = None
+    c5_client = None
+    if market_platform == "c5":
+        c5_cfg = cfg.get("c5") or {}
+        if not (c5_cfg.get("app_key") or "").strip():
+            ctx.log("未配置 C5 app_key", "error", category="config")
+            ctx.set_status("error", "CONFIG_ERROR")
+            return
+        if not (c5_cfg.get("trade_url") or "").strip():
+            ctx.log("未配置 C5 trade_url", "error", category="config")
+            ctx.set_status("error", "CONFIG_ERROR")
+            return
+        c5_client = create_c5_client_from_config(cfg)
+    else:
+        cookies_buff = cred_buff.get("cookies", "")
+        if not cookies_buff:
+            ctx.log("未配置 Buff cookies", "error", category="config")
+            ctx.set_status("error", "CONFIG_ERROR")
+            return
+        buyer = create_buff_client_from_config(cred_buff, cfg)
 
     ctx.log("买入阶段启动", "info")
     max_discount = pipeline_cfg.get("max_discount")
@@ -208,7 +245,7 @@ def _run_pipeline(config: dict) -> None:
     retry_interval = int(pipeline_cfg.get("retry_interval_seconds", DEFAULT_RETRY_INTERVAL_SECONDS))
     ctx.log(
         f"配置: 目标余额={target}, 排除关键词={exclude}, 最高折扣={max_discount}, "
-        f"排序={sort_desc}({sort_by}), 无符合时{retry_interval}秒后重试",
+        f"采购平台={market_platform.upper()}, 排序={sort_desc}({sort_by}), 无符合时{retry_interval}秒后重试",
         "info",
     )
     if ctx.verbose:
@@ -233,7 +270,6 @@ def _run_pipeline(config: dict) -> None:
 
     steam_client = SteamClient()
     analyzer = StabilityAnalyzer(usd_to_cny=USD_TO_CNY_DEFAULT)
-    buyer = create_buff_client_from_config(cred_buff, cfg)
     failed_goods_ids_ttl: dict = {}
 
     while True:
@@ -277,7 +313,7 @@ def _run_pipeline(config: dict) -> None:
                     return
                 continue
 
-            ctx.log("支付方式与 Buff 客户端已就绪", "info", category="buff")
+            ctx.log(f"{market_platform.upper()} 采购客户端已就绪", "info", category=market_platform)
             now_ts = time.time()
             expired_ids = [gid for gid, exp in failed_goods_ids_ttl.items() if now_ts >= exp]
             for gid in expired_ids:
@@ -292,6 +328,8 @@ def _run_pipeline(config: dict) -> None:
                 failed_goods_ids,
                 set(),
                 set(),
+                market_platform=market_platform,
+                c5_client=c5_client,
             )
             if stopped:
                 return

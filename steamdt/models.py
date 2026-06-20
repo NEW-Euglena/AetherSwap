@@ -11,7 +11,7 @@ class SteamDTQueryParams:
     purchase_plan: str = ""
     sale_plan: str = "STEAM_SELL_PRICE"
     min_sell_price: str = "2"
-    max_sell_price: int = 5000
+    max_sell_price: float = 5000.0
     min_transaction_count: str = "200"
     platform_list: List[str] = field(default_factory=lambda: ["BUFF"])
     currency: str = "CNY"
@@ -43,6 +43,7 @@ class SteamDTRow:
     safe_buy_ratio: str = "0" 
     recent_ratio: str = "0"   
     platform: str = ""        
+    platform_name: str = ""
     steam_link: str = ""      
     update_time: str = ""     
 

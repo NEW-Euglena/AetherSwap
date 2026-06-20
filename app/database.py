@@ -28,6 +28,10 @@ class Purchase(SQLModel, table=True):
     goods_id: int = 0
     price: float = 0.0
     at: float = 0.0
+    platform: Optional[str] = None
+    order_id: Optional[str] = None
+    product_id: Optional[str] = None
+    out_trade_no: Optional[str] = None
     market_price: Optional[float] = None
     sale_price: Optional[float] = None
     sold_at: Optional[float] = None
@@ -119,6 +123,18 @@ def init_db() -> None:
             conn.commit()
         except Exception:
             pass  
+    for sql in (
+        "ALTER TABLE purchase ADD COLUMN platform VARCHAR",
+        "ALTER TABLE purchase ADD COLUMN order_id VARCHAR",
+        "ALTER TABLE purchase ADD COLUMN product_id VARCHAR",
+        "ALTER TABLE purchase ADD COLUMN out_trade_no VARCHAR",
+    ):
+        with engine.connect() as conn:
+            try:
+                conn.execute(sa_text(sql))
+                conn.commit()
+            except Exception:
+                pass
     with engine.connect() as conn:
         rows = conn.execute(
             sa_text("SELECT id, positive_rate, total_reviews FROM steamdealgame WHERE wilson_score IS NULL")
@@ -137,6 +153,10 @@ def _purchase_from_dict(d: dict) -> Purchase:
         goods_id=int(d.get("goods_id", 0) or 0),
         price=float(d.get("price", 0)),
         at=float(d.get("at", 0)),
+        platform=str(d["platform"]) if d.get("platform") is not None else None,
+        order_id=str(d["order_id"]) if d.get("order_id") is not None else None,
+        product_id=str(d["product_id"]) if d.get("product_id") is not None else None,
+        out_trade_no=str(d["out_trade_no"]) if d.get("out_trade_no") is not None else None,
         market_price=float(d["market_price"]) if d.get("market_price") is not None else None,
         sale_price=float(d["sale_price"]) if d.get("sale_price") is not None else None,
         sold_at=float(d["sold_at"]) if d.get("sold_at") is not None else None,
@@ -161,6 +181,14 @@ def _purchase_to_dict(p: Purchase) -> dict:
         "price": p.price,
         "at": p.at,
     }
+    if p.platform is not None:
+        d["platform"] = p.platform
+    if p.order_id is not None:
+        d["order_id"] = p.order_id
+    if p.product_id is not None:
+        d["product_id"] = p.product_id
+    if p.out_trade_no is not None:
+        d["out_trade_no"] = p.out_trade_no
     if p.market_price is not None:
         d["market_price"] = p.market_price
     if p.sale_price is not None:
@@ -220,6 +248,7 @@ def migrate_from_json() -> bool:
 _PURCHASE_UPDATABLE = frozenset({
     "name", "price", "goods_id", "market_price", "sale_price",
     "sold_at", "pending_receipt", "assetid", "listing", "listing_status",
+    "platform", "order_id", "product_id", "out_trade_no",
 })
 _SALE_UPDATABLE = frozenset({"name", "price", "goods_id", "assetid", "at"})
 def db_append_purchase(p: dict) -> None:

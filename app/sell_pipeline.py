@@ -196,8 +196,21 @@ def _build_listing_plan(
             ctx.log(f"[出售] 跳过无名物品 assetid={aid}", "info", category="steam")
             continue
         
-        buy_record = _find_buy_record(purchases_snapshot, aid, market_hash_name)
+        buy_record = _find_buy_record(purchases_snapshot, aid)
         if not buy_record:
+            same_name_record = next(
+                (
+                    p for p in purchases_snapshot
+                    if ((p.get("market_hash_name") or p.get("name") or "").strip() == market_hash_name)
+                ),
+                None,
+            )
+            if same_name_record:
+                ctx.log(
+                    f"[出售] {name} assetid={aid} 未精确命中本地购买记录；检测到同名购买记录但不用于自动出售，请人工核对 assetid 后再处理",
+                    "info", category="steam",
+                )
+                continue
             ctx.log(f"[出售] {name} assetid={aid} 不在本地购买记录中（非倒余额库>存），为保护个人物品跳过出售", "info", category="steam")
             continue
 
@@ -253,6 +266,19 @@ def _build_listing_plan(
         list_price = round(float(list_price), 2)
         trend = None
         profit_output = {}
+        lowest_price = orders_data.get("lowest_price")
+        if lowest_price is not None:
+            try:
+                lowest_floor = round(float(lowest_price) - 0.01 + sell_offset, 2)
+                if lowest_floor > 0 and list_price < lowest_floor:
+                    ctx.log(
+                        f"[出售] {name} assetid={aid} 智能定价({list_price:.2f})低于最低卖单保护价({lowest_floor:.2f})，改用保护价",
+                        "warn", category="steam",
+                    )
+                    list_price = lowest_floor
+                    reason = f"{reason}; 最低卖单保护"
+            except (TypeError, ValueError):
+                pass
 
         # Currency conversion for display
         display_price = list_price
@@ -281,7 +307,6 @@ def _build_listing_plan(
 
         # Sell strategy 3: ratio guard
         if sell_strategy == 3:
-            buy_record = _find_buy_record(purchases_snapshot, aid, market_hash_name)
             if buy_record:
                 buy_price = float(buy_record.get("price") or 0)
                 market_price_at_buy = float(buy_record.get("market_price") or 0)
@@ -375,14 +400,12 @@ def _build_listing_plan(
     return to_list
 
 
-def _find_buy_record(purchases_snapshot: list, aid: str, market_hash_name: str) -> Optional[dict]:
-    """Return the most relevant purchase record for a given asset."""
-    if aid:
-        for p in purchases_snapshot:
-            if str(p.get("assetid") or "") == aid:
-                return p
+def _find_buy_record(purchases_snapshot: list, aid: str) -> Optional[dict]:
+    """仅按 assetid 精确查找购买记录，自动出售不得按名称兜底。"""
+    if not aid:
+        return None
     for p in purchases_snapshot:
-        if ((p.get("market_hash_name") or p.get("name") or "").strip() == market_hash_name):
+        if str(p.get("assetid") or "").strip() == aid:
             return p
     return None
 

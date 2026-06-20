@@ -2,6 +2,7 @@
 from datetime import datetime
 from pathlib import Path
 from fastapi import APIRouter
+from fastapi.responses import Response
 from app.state import (
     clear_log,
     confirm_payment,
@@ -47,6 +48,21 @@ def api_log_export():
     ) + "\n"
     filename.write_text(content, encoding="utf-8")
     return {"ok": True, "path": str(filename), "lines": len(lines)}
+
+@router.get("/api/log/download")
+def api_log_download():
+    lines = get_log(0)
+    def fmt_time(t):
+        if t is None:
+            return ""
+        return datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M:%S")
+    content = "\n".join(
+        f"{fmt_time(e.get('t'))} [{e.get('level', 'info')}] {e.get('msg', '')}"
+        for e in lines
+    ) + "\n"
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    headers = {"Content-Disposition": f'attachment; filename="log_{ts}.txt"'}
+    return Response(content, media_type="text/plain; charset=utf-8", headers=headers)
 @router.get("/api/plan")
 def api_plan():
     return {"plan": get_plan()}

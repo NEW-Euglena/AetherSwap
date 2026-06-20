@@ -1,12 +1,15 @@
 from typing import Any, Optional
 DEFAULTS = {
+    "market": {
+        "platform": "buff",
+    },
     "iflow": {
         "page_num": 1,
         "page_size": 200,
         "platforms": "buff",
         "sort_by": "sell",
-        "min_price": 2,
-        "max_price": 5000,
+        "min_price": 2.0,
+        "max_price": 5000.0,
         "min_volume": 200,
         "type": "swap",
         "want_to_get": "STEAM_BALANCE",
@@ -17,6 +20,18 @@ DEFAULTS = {
         "pay_method": "alipay",
         "game": "csgo",
         "price_tolerance": 0.5,
+    },
+    "c5": {
+        "app_key": "",
+        "app_secret": "",
+        "trade_url": "",
+        "game": "csgo",
+        "app_id": 730,
+        "price_tolerance": 0.5,
+        "delivery": 1,
+        "buy_mode": "normal",
+        "order_poll_interval_seconds": 15,
+        "order_timeout_seconds": 300,
     },
     "stability": {
         "days": 30,
@@ -35,7 +50,7 @@ DEFAULTS = {
         "request_failure_delay_seconds": 5,
     },
     "pipeline": {
-        "target_balance": 100,
+        "target_balance": 100.0,
         "max_discount": 0.9,
         "huge_profit_offset": 0.05,
         "iflow_top_n": 50,
@@ -43,7 +58,7 @@ DEFAULTS = {
         "sell_price_ratio": 1.0,
         "verbose_debug": False,
         "sell_strategy": 4,
-        "sell_price_offset": 0,
+        "sell_price_offset": 0.0,
         "sell_price_wall_volume": 20,
         "sell_price_max_ignore_volume": 4,
         "sell_trend_days": 7,
@@ -93,7 +108,7 @@ DEFAULTS = {
         "device_id": "",
     },
     "system": {
-        "exchange_rate_refresh_hours": 24,
+        "exchange_rate_refresh_hours": 24.0,
         "ui_scale": "0.7",
     },
     "proxy_pool": {
@@ -129,6 +144,15 @@ def _validate_ranges(cfg: dict) -> dict:
     pipe = cfg.get("pipeline") or {}
     stab = cfg.get("stability") or {}
     buff = cfg.get("buff") or {}
+    market = cfg.get("market") or {}
+    c5 = cfg.get("c5") or {}
+
+    platform = str(market.get("platform") or "buff").strip().lower()
+    if platform not in {"buff", "c5"}:
+        warnings.warn(f"[config] market.platform={platform} 不支持，已修正为 buff")
+        market["platform"] = "buff"
+    else:
+        market["platform"] = platform
 
     if isinstance(pipe.get("max_discount"), (int, float)):
         v = pipe["max_discount"]
@@ -165,6 +189,22 @@ def _validate_ranges(cfg: dict) -> dict:
         if v < 0:
             warnings.warn(f"[config] buff.price_tolerance={v} 不能为负数，已修正为0")
             buff["price_tolerance"] = 0.0
+
+    if isinstance(c5.get("price_tolerance"), (int, float)):
+        v = c5["price_tolerance"]
+        if v < 0:
+            warnings.warn(f"[config] c5.price_tolerance={v} 不能为负数，已修正为0")
+            c5["price_tolerance"] = 0.0
+
+    if isinstance(c5.get("delivery"), int) and c5["delivery"] not in (0, 1, 2):
+        warnings.warn(f"[config] c5.delivery={c5['delivery']} 超出范围，已修正为1")
+        c5["delivery"] = 1
+
+    if isinstance(c5.get("order_poll_interval_seconds"), int) and c5["order_poll_interval_seconds"] < 3:
+        c5["order_poll_interval_seconds"] = 3
+
+    if isinstance(c5.get("order_timeout_seconds"), int) and c5["order_timeout_seconds"] < 30:
+        c5["order_timeout_seconds"] = 30
 
     return cfg
 

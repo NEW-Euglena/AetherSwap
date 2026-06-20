@@ -68,12 +68,92 @@ def _parse_cookies(cookie_str: str) -> dict:
     return out
 def _csrf(cookies_dict: dict) -> str:
     return cookies_dict.get("csrf_token", "").strip('"')
+def _normalize_timestamp(value) -> Optional[float]:
+    try:
+        ts = float(value)
+    except (TypeError, ValueError):
+        return None
+    if ts > 10_000_000_000:
+        ts = ts / 1000.0
+    return ts
+def _nested_dicts(item: dict) -> list:
+    out = [item]
+    for key in ("goods_info", "goods", "item", "asset", "sell_order"):
+        val = item.get(key)
+        if isinstance(val, dict):
+            out.append(val)
+    for key in ("items", "goods_list", "items_to_trade"):
+        val = item.get(key)
+        if isinstance(val, list):
+            out.extend(x for x in val if isinstance(x, dict))
+    return out
+def _extract_order_ids(item: dict) -> set:
+    keys = (
+        "id", "order_id", "bill_order_id", "bill_orderid", "billOrderId",
+        "orderId", "batch_buy_id", "batch_id",
+    )
+    ids = set()
+    for d in _nested_dicts(item):
+        for key in keys:
+            raw = d.get(key)
+            if raw is not None and str(raw).strip():
+                ids.add(str(raw).strip())
+    return ids
+def _extract_goods_ids(item: dict) -> set:
+    keys = ("goods_id", "goodsId", "goodsid")
+    ids = set()
+    for i, d in enumerate(_nested_dicts(item)):
+        candidate_keys = keys if i == 0 else keys + ("id",)
+        for key in candidate_keys:
+            raw = d.get(key)
+            if raw is None:
+                continue
+            try:
+                ids.add(str(int(raw)))
+            except (TypeError, ValueError):
+                s = str(raw).strip()
+                if s:
+                    ids.add(s)
+    return ids
+def _extract_created_at(item: dict) -> Optional[float]:
+    for d in _nested_dicts(item):
+        for key in ("created_at", "createdAt", "create_time", "createTime", "created_time"):
+            ts = _normalize_timestamp(d.get(key))
+            if ts is not None:
+                return ts
+    return None
+def _normalize_order_state(raw: str) -> str:
+    return str(raw or "").strip().upper().replace("-", "_")
+def _short_debug_value(value, max_len: int = 80) -> str:
+    s = str(value or "")
+    if len(s) <= max_len:
+        return s
+    return s[:max_len - 3] + "..."
+def _format_payment_candidate_debug(item: dict, query_state: str, order_id: Optional[str], goods_id: int, start_time: float) -> str:
+    order_ids = sorted(_extract_order_ids(item))
+    goods_ids = sorted(_extract_goods_ids(item))
+    created_at = _extract_created_at(item)
+    order_match = bool(order_id and str(order_id) in order_ids)
+    goods_match = str(goods_id) in goods_ids
+    time_match = created_at is not None and created_at >= (start_time - 30)
+    raw_state = item.get("state") or item.get("status") or ""
+    created_text = "" if created_at is None else f"{created_at:.0f}"
+    order_ids_text = ",".join(_short_debug_value(x, 32) for x in order_ids[:3])
+    goods_ids_text = ",".join(_short_debug_value(x, 24) for x in goods_ids[:3])
+    return (
+        f"query_state={query_state or '<empty>'} raw_state={_short_debug_value(raw_state, 32)} "
+        f"order_ids=[{order_ids_text}] goods_ids=[{goods_ids_text}] created_at={created_text} "
+        f"order_match={order_match} goods_match={goods_match} time_match={time_match}"
+    )
 class BuffBuyer:
     def __init__(self, cookie_str: str, pay_method: int = PAY_METHOD_ALIPAY, use_ssl: bool = True):
         self.cookies_dict = _parse_cookies(cookie_str)
         self.csrf_token = _csrf(self.cookies_dict)
         self.pay_method = pay_method
         self.use_ssl = use_ssl
+        self.last_payment_status_debug = ""
+        self._payment_status_poll_counts = {}
+        self._seller_send_confirmed_order_ids = set()
         self.headers = {
             "Host": "buff.163.com",
             "Accept": "application/json, text/javascript, */*; q=0.01",
@@ -148,82 +228,151 @@ class BuffBuyer:
             None: if unpaid (wait_pay/paying)
             "NOT_FOUND": if not found (for retry tolerance)
 
-        双轨检测策略（针对微信支付）：
-        - 主轨：查询 buy_order/history（历史列表），用 order_id 精确匹配
-        - 副轨：当 history 找不到订单时，查询 bill_order/page_pay：
-            * 若 page_pay 返回非 OK 或数据为空 → 订单已离开"待付款"状态 → 判定为已付款
-            * 若 page_pay 返回 OK 且仍有数据 → 订单仍在等待付款 → 返回 None
+        检测策略：
+        - 单件订单只信任 buy_order/history 中的明确状态，避免把支付页过期/取消误判成已付款。
+        - 批量订单创建后通常没有明细订单，仍使用二维码接口消失作为付款完成信号，后续核销会再次验证。
         """
-        params = {
-            "game": game,
-            "page_num": "1",
-            "page_size": "50",
-            "state": "",
-            "_": str(int(time.time() * 1000)),
-        }
-        # Note: BuffVerificationRequired will be automatically raised by _make_request if triggered.
-        res = self._make_request("GET", API_HISTORY, params=params)
-        items = res.get("data", {}).get("items", [])
+        self.last_payment_status_debug = ""
+        poll_key = (str(order_id or ""), str(goods_id), bool(is_batch), game)
+        poll_count = self._payment_status_poll_counts.get(poll_key, 0) + 1
+        self._payment_status_poll_counts[poll_key] = poll_count
+        full_scan = poll_count == 1 or poll_count % 4 == 0
+        if full_scan:
+            history_states = ("", "wait_pay", "wait_send", "wait_receive", "success", "cancel")
+        else:
+            history_states = ("", "wait_pay", "wait_send")
+        history_items = []
+        history_counts = {}
+        seen = set()
+        for query_state in history_states:
+            params = {
+                "game": game,
+                "page_num": "1",
+                "page_size": "50",
+                "state": query_state,
+                "_": str(int(time.time() * 1000)),
+            }
+            # Note: BuffVerificationRequired will be automatically raised by _make_request if triggered.
+            res = self._make_request("GET", API_HISTORY, params=params)
+            items = res.get("data", {}).get("items", [])
+            if not isinstance(items, list):
+                history_counts[query_state or "<empty>"] = f"non_list:{type(items).__name__}"
+                continue
+            history_counts[query_state or "<empty>"] = len(items)
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                ids = tuple(sorted(_extract_order_ids(item)))
+                dedupe_key = (query_state, ids, item.get("created_at"), item.get("goods_id"))
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+                history_items.append((item, query_state))
         
+        paid_states = {
+            "WAIT_SEND", "WAIT_RECEIVE", "TO_DELIVER", "TO_SEND", "WAIT_DELIVER", "WAIT_DELIVERY",
+            "SUCCESS", "SUCCESSFUL", "DONE", "FINISHED", "COMPLETE", "COMPLETED", "PAID",
+        }
+        unpaid_states = {"PAYING", "WAIT_PAY", "UNPAID", "INIT"}
+        cancelled_states = {"FAIL", "CANCEL", "CANCELLED", "CLOSED"}
         found_any = False
-        all_paid = True
+        has_paid = False
         has_cancelled = False
-        has_paying = False
+        has_unpaid = False
+        has_unknown = False
+        has_paying_order_match = False
+        matched_debug = []
 
-        for item in items:
-            match = False
-            if not is_batch and order_id:
-                if str(item.get("id", "")) == str(order_id):
-                    match = True
-            else:
-                item_goods_id = item.get("goods_id")
-                item_created_at = item.get("created_at", 0)
-                # 允许30秒的时钟误差容忍
-                if str(item_goods_id) == str(goods_id) and item_created_at >= (start_time - 30):
-                    match = True
+        for item, query_state in history_items:
+            order_ids = _extract_order_ids(item)
+            order_id_match = bool(order_id and str(order_id) in order_ids)
+            goods_id_match = str(goods_id) in _extract_goods_ids(item)
+            item_created_at = _extract_created_at(item)
+            time_match = item_created_at is not None and item_created_at >= (start_time - 30)
+            match = order_id_match or (goods_id_match and time_match)
 
             if match:
                 found_any = True
-                state = item.get("state", "").upper()
-                if state in ("FAIL", "CANCEL", "CANCELLED", "CLOSED"):
+                matched_debug.append(_format_payment_candidate_debug(item, query_state, order_id, goods_id, start_time))
+                state = _normalize_order_state(item.get("state") or item.get("status") or query_state)
+                if state in cancelled_states:
                     has_cancelled = True
-                elif state in ("PAYING", "WAIT_PAY", "UNPAID", "INIT"):
-                    has_paying = True
-                    all_paid = False
+                elif state in paid_states:
+                    has_paid = True
+                elif state in unpaid_states:
+                    has_unpaid = True
+                    if state == "PAYING" and order_id_match:
+                        has_paying_order_match = True
                 else:
-                    # 其他任何状态（wait_send/wait_receive/success 等）均视为已付款
-                    pass
+                    has_unknown = True
 
         if has_cancelled:
+            self.last_payment_status_debug = "matched_cancelled: " + " | ".join(matched_debug[:5])
             return False
 
-        if all_paid and found_any:
-            return True
+        if found_any:
+            self.last_payment_status_debug = "matched: " + " | ".join(matched_debug[:5])
+            if has_paid and not has_unpaid:
+                return True
+            if not is_batch and order_id and has_paying_order_match:
+                try:
+                    still_waiting = self._check_page_pay_status(str(order_id), game)
+                    if still_waiting is False:
+                        seller_send_ok = self._confirm_single_order_by_seller_send(str(order_id), game)
+                        self.last_payment_status_debug += (
+                            f" page_pay_still_waiting={still_waiting} "
+                            f"seller_send_accepted={seller_send_ok}"
+                        )
+                        if seller_send_ok is True:
+                            return True
+                        if seller_send_ok is False:
+                            return False
+                    self.last_payment_status_debug += f" page_pay_still_waiting={still_waiting}"
+                except (BuffAuthExpired, BuffVerificationRequired):
+                    raise
+                except Exception as e:
+                    self.last_payment_status_debug += f" page_pay_error={type(e).__name__}: {e}"
+            return None
 
-        # 以下两种情况都使用 page_pay 副轨判断：
-        # 1. NOT_FOUND：history 里完全找不到该订单（批量订单常见）
-        # 2. found 但 has_paying：订单在 history 里状态仍是 wait_pay，
-        #    page_pay 接口能更实时地反映付款是否已完成
+        if not is_batch:
+            sample_debug = [
+                _format_payment_candidate_debug(item, query_state, order_id, goods_id, start_time)
+                for item, query_state in history_items[:5]
+            ]
+            self.last_payment_status_debug = (
+                f"not_found history_counts={history_counts} target_order_id={_short_debug_value(order_id, 40)} "
+                f"target_goods_id={goods_id} start_time={start_time:.0f} samples="
+                + (" | ".join(sample_debug) if sample_debug else "[]")
+            )
+            return "NOT_FOUND"
+
+        # 批量订单在付款前只有 batch_id，history 可能查不到明细；二维码消失后再进入核销阶段验证。
         if order_id:
             try:
-                if is_batch:
-                    # 批量订单：用 batch_buy/wx_pay_qrcode 接口判断
-                    # 付款前该接口返回二维码 URL，付款后返回空或非 OK
-                    still_waiting = self._check_batch_pay_status(order_id, game)
-                else:
-                    # 单件订单：用 bill_order/page_pay 接口判断
-                    still_waiting = self._check_page_pay_status(order_id, game)
-                # False → 订单已离开待付款状态（已付款或已取消），判定为已付款
-                # True  → 订单仍在等待付款
+                still_waiting = self._check_batch_pay_status(order_id, game)
+                self.last_payment_status_debug = (
+                    f"batch_history_not_found history_counts={history_counts} "
+                    f"target_batch_id={_short_debug_value(order_id, 40)} qrcode_still_waiting={still_waiting}"
+                )
                 if still_waiting is False:
                     return True
-                return None  # 仍在等待付款
-            except Exception:
-                pass  # 副轨查询失败，回退
+                return None
+            except Exception as e:
+                self.last_payment_status_debug = (
+                    f"batch_history_not_found history_counts={history_counts} "
+                    f"target_batch_id={_short_debug_value(order_id, 40)} qrcode_error={type(e).__name__}: {e}"
+                )
 
-        if not found_any:
-            return "NOT_FOUND"
-        return None  # 找到了但仍是 wait_pay，继续等待
+        sample_debug = [
+            _format_payment_candidate_debug(item, query_state, order_id, goods_id, start_time)
+            for item, query_state in history_items[:5]
+        ]
+        self.last_payment_status_debug = (
+            f"batch_not_found history_counts={history_counts} target_batch_id={_short_debug_value(order_id, 40)} "
+            f"target_goods_id={goods_id} start_time={start_time:.0f} samples="
+            + (" | ".join(sample_debug) if sample_debug else "[]")
+        )
+        return "NOT_FOUND"
 
     def _check_page_pay_status(self, order_id: str, game: str = "csgo") -> bool:
         """
@@ -626,6 +775,27 @@ class BuffBuyer:
             raise
         except Exception:
             return None
+
+    def _confirm_single_order_by_seller_send(self, order_id: str, game: str = "csgo") -> Optional[bool]:
+        if order_id in self._seller_send_confirmed_order_ids:
+            return True
+        h = {"Referer": f"https://buff.163.com/market/buy_order/history?game={game}"}
+        payload = {
+            "bill_orders": [str(order_id)],
+            "game": game,
+            "steamid": None,
+        }
+        try:
+            res = self._make_request("POST", API_ASK_SELLER_SEND, headers=h, data=json.dumps(payload))
+        except (BuffAuthExpired, BuffVerificationRequired):
+            raise
+        except Exception:
+            return None
+        if res.get("code") == "OK":
+            self._seller_send_confirmed_order_ids.add(str(order_id))
+            return True
+        return False
+
     def ask_seller_to_send(self, bill_order_id_or_ids, game: str = "csgo") -> bool:
         if isinstance(bill_order_id_or_ids, (list, tuple)):
             ids = [str(x) for x in bill_order_id_or_ids if x is not None]
@@ -636,6 +806,9 @@ class BuffBuyer:
         h = {"Referer": f"https://buff.163.com/market/buy_order/history?game={game}"}
         any_success = False
         for i, order_id in enumerate(ids):
+            if order_id in self._seller_send_confirmed_order_ids:
+                any_success = True
+                continue
             if i > 0:
                 jittered_sleep(1.5)
             payload = {
@@ -647,6 +820,7 @@ class BuffBuyer:
                 res = self._make_request("POST", API_ASK_SELLER_SEND, headers=h, data=json.dumps(payload))
                 if res.get("code") == "OK":
                     any_success = True
+                    self._seller_send_confirmed_order_ids.add(order_id)
             except (BuffAuthExpired, BuffVerificationRequired):
                 raise
             except Exception:

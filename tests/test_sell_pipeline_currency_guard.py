@@ -113,6 +113,135 @@ def test_valid_rate_converts_price():
     )
 
 
+def test_same_name_purchase_does_not_allow_auto_sell():
+    """同名但 assetid 不同的购买记录不能让库存物品进入自动出售计划。"""
+    from app.sell_pipeline import _build_listing_plan
+
+    logged = []
+    ctx = _build_ctx(logged)
+
+    with patch("app.sell_pipeline.get_sell_orders_cny") as mock_orders:
+        result = _build_listing_plan(
+            ctx=ctx,
+            cfg={"pipeline": {}},
+            session=MagicMock(),
+            sellable=[{
+                "name": "AK-47 | Redline",
+                "market_hash_name": "AK-47 | Redline",
+                "assetid": "personal-asset",
+                "can_sell": True,
+                "appid": 730,
+                "contextid": "2",
+            }],
+            sell_strategy=1,
+            pipeline_cfg={},
+            purchases_snapshot=[{
+                "assetid": "bought-asset",
+                "market_hash_name": "AK-47 | Redline",
+                "price": 100,
+            }],
+            ok_listings=False,
+            active_listing_ids=set(),
+            listing_assetid_to_name={},
+            assetid_to_name_map={},
+            account_currency="CNY",
+            rate_map={},
+        )
+
+    assert result == []
+    mock_orders.assert_not_called()
+    assert any("未精确命中本地购买记录" in msg for _, msg in logged)
+
+
+def test_strategy3_uses_strict_ratio_multiplier():
+    """策略3只允许出售比例比买入时比例恶化 3%。"""
+    from app.sell_pipeline import _build_listing_plan
+
+    logged = []
+    ctx = _build_ctx(logged)
+
+    with patch("app.sell_pipeline.get_sell_orders_cny", return_value={"sell_orders": [{"price": 1225, "quantity": 3}]}), \
+         patch("app.sell_pipeline.compute_smart_list_price", return_value=(12.25, "wall")), \
+         patch("app.sell_pipeline._steam_latest_price_and_trend", return_value=(12.25, 0, [12.25])):
+
+        result = _build_listing_plan(
+            ctx=ctx,
+            cfg={"pipeline": {}},
+            session=MagicMock(),
+            sellable=[{
+                "name": "Dreams & Nightmares Case",
+                "market_hash_name": "Dreams & Nightmares Case",
+                "assetid": "case-asset",
+                "can_sell": True,
+                "appid": 730,
+                "contextid": "2",
+            }],
+            sell_strategy=3,
+            pipeline_cfg={},
+            purchases_snapshot=[{
+                "assetid": "case-asset",
+                "market_hash_name": "Dreams & Nightmares Case",
+                "price": 8.2,
+                "market_price": 12.73,
+            }],
+            ok_listings=False,
+            active_listing_ids=set(),
+            listing_assetid_to_name={},
+            assetid_to_name_map={},
+            account_currency="CNY",
+            rate_map={},
+        )
+
+    assert result == []
+    assert any("1.03倍" in msg for _, msg in logged)
+
+
+def test_listing_price_respects_lowest_sell_order_floor():
+    """智能定价异常偏低时，不应低于 Steam 最低卖单减一分。"""
+    from app.sell_pipeline import _build_listing_plan
+
+    logged = []
+    ctx = _build_ctx(logged)
+
+    with patch("app.sell_pipeline.get_sell_orders_cny", return_value={
+            "lowest_price": 12.62,
+            "sell_orders": [(12.39, 2)],
+         }), \
+         patch("app.sell_pipeline.compute_smart_list_price", return_value=(12.38, "单档无断层")):
+
+        result = _build_listing_plan(
+            ctx=ctx,
+            cfg={"pipeline": {}},
+            session=MagicMock(),
+            sellable=[{
+                "name": "Dreams & Nightmares Case",
+                "market_hash_name": "Dreams & Nightmares Case",
+                "assetid": "case-asset",
+                "can_sell": True,
+                "appid": 730,
+                "contextid": "2",
+            }],
+            sell_strategy=1,
+            pipeline_cfg={},
+            purchases_snapshot=[{
+                "assetid": "case-asset",
+                "market_hash_name": "Dreams & Nightmares Case",
+                "price": 8.2,
+                "market_price": 12.73,
+            }],
+            ok_listings=False,
+            active_listing_ids=set(),
+            listing_assetid_to_name={},
+            assetid_to_name_map={},
+            account_currency="CNY",
+            rate_map={},
+        )
+
+    assert len(result) == 1
+    assert result[0]["list_price"] == 12.61
+    assert any("最低卖单保护价" in msg for _, msg in logged)
+
+
 # ------------------------------------------------------------------ test 3 ---
 
 def test_no_account_skips_sell_phase():

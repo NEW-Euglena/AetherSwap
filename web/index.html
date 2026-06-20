@@ -795,7 +795,14 @@
                 <input id="cfg-platforms" placeholder="e.g. BUFF" />
               </div>
               <div class="field">
-                <label for="cfg-sort_by">排序方式</label>
+                <label for="cfg-market-platform">采购平台</label>
+                <select id="cfg-market-platform">
+                  <option value="buff">BUFF</option>
+                  <option value="c5">C5</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="cfg-sort_by">排序策略</label>
                 <select id="cfg-sort_by">
                   <option value="sell">最优寄售</option>
                   <option value="buy">最优求购</option>
@@ -829,6 +836,65 @@
                   <option value="alipay">支付宝 (Alipay)</option>
                   <option value="wechat">微信 (WeChat)</option>
                 </select>
+              </div>
+              <div class="field-row">
+                <div class="field">
+                  <label>目标余额</label>
+                  <input type="number" id="cfg-target_balance" />
+                </div>
+                <div class="field">
+                  <label>最高折扣</label>
+                  <input type="number" id="cfg-max_discount" placeholder="0-1，二次验证用"
+                    title="锁单时(目标平台最低价/Steam参考价)×1.15须<此值；不在此处筛SteamDT" />
+                </div>
+              </div>
+              <div class="field-row">
+                <div class="field">
+                  <label>巨额利润阈值差 (默认0.05)</label>
+                  <input type="number" id="cfg-huge_profit_offset" step="0.01" placeholder="0.05"
+                    title="巨额利润阈值 = 最高折扣 - 此差值" />
+                </div>
+                <div class="field">
+                  <label>SteamDT 取前N条</label>
+                  <input type="number" id="cfg-iflow_top_n" min="0" placeholder="50"
+                    title=">0时仅取SteamDT前N条排查；0=不限制；最高折扣在锁单二次验证生效" />
+                </div>
+              </div>
+              <div class="field">
+                <label>关键词排除 (每行一个)</label>
+                <textarea id="cfg-exclude_keywords" rows="4"></textarea>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <h2>C5 交易策略</h2>
+            <div class="form-grid">
+              <div class="field">
+                <label for="cfg-c5-app-key">app_key</label>
+                <input type="password" id="cfg-c5-app-key" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label for="cfg-c5-app-secret">app_secret</label>
+                <input type="password" id="cfg-c5-app-secret" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label for="cfg-c5-trade-url">Steam 交易链接</label>
+                <input id="cfg-c5-trade-url" autocomplete="off" />
+              </div>
+              <div class="field-row">
+                <div class="field">
+                  <label for="cfg-c5-delivery">发货方式</label>
+                  <select id="cfg-c5-delivery">
+                    <option value="1">自动发货</option>
+                    <option value="0">不限</option>
+                    <option value="2">人工发货</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="cfg-c5-price-tolerance">价格容忍</label>
+                  <input type="number" id="cfg-c5-price-tolerance" step="0.01" min="0" />
+                </div>
               </div>
             </div>
           </div>

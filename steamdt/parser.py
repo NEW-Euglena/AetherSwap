@@ -17,29 +17,30 @@ def parse_response(result: dict, target_platform: str = "BUFF") -> List[SteamDTR
     rows: List[SteamDTRow] = []
     for i, item in enumerate(data, 1):
         plist = item.get("platformList") or []
-        buff = _find_platform(plist, target_platform)
+        platform = _find_platform(plist, target_platform)
         steam = _find_platform(plist, "STEAM")
 
-        if buff:
-            price = buff.get("price", item.get("platformPrice", 0))
-            buff_link = buff.get("linkUrl", "")
-            buff_sell_rate = buff.get("sellRate")
-            buff_purchase_rate = buff.get("purchaseRate")
+        if platform:
+            price = platform.get("price", item.get("platformPrice", 0))
+            platform_link = platform.get("linkUrl", "")
+            platform_sell_rate = platform.get("sellRate")
+            platform_purchase_rate = platform.get("purchaseRate")
         else:
             price = item.get("platformPrice", 0)
-            buff_link = ""
-            buff_sell_rate = None
-            buff_purchase_rate = None
+            platform_link = ""
+            platform_sell_rate = None
+            platform_purchase_rate = None
+        platform_name = target_platform if platform else ""
 
         steam_link = steam.get("linkUrl", "") if steam else ""
 
         sell_rate = item.get("sellRate", 0)
         purchase_rate = item.get("purchaseRate", 0)
 
-        if buff_sell_rate is not None:
-            sell_rate = buff_sell_rate
-        if buff_purchase_rate is not None:
-            purchase_rate = buff_purchase_rate
+        if platform_sell_rate is not None:
+            sell_rate = platform_sell_rate
+        if platform_purchase_rate is not None:
+            purchase_rate = platform_purchase_rate
 
         rows.append(SteamDTRow(
             index=str(i),
@@ -50,7 +51,8 @@ def parse_response(result: dict, target_platform: str = "BUFF") -> List[SteamDTR
             buy_ratio=str(purchase_rate or 0),
             safe_buy_ratio=str(purchase_rate or sell_rate or 0), 
             recent_ratio=str(sell_rate or 0),      
-            platform=buff_link,
+            platform=platform_link,
+            platform_name=platform_name,
             steam_link=steam_link,
             update_time=str(item.get("updateTime", "")),
             name_cn=item.get("name", ""),

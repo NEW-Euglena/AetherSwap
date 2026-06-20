@@ -3,11 +3,29 @@ let inventoryRefreshSeconds = 60;
 let inventoryTimer = null;
 let currentPriceRefreshMinutes = 10;
 let currentPriceTimer = null;
+function optionalFloat(id) {
+  const node = el(id);
+  if (!node) return undefined;
+  const text = node.value;
+  if (text === "") return undefined;
+  const value = parseFloat(text);
+  return Number.isFinite(value) ? value : undefined;
+}
+function optionalInt(id) {
+  const node = el(id);
+  if (!node) return undefined;
+  const text = node.value;
+  if (text === "") return undefined;
+  const value = parseInt(text, 10);
+  return Number.isFinite(value) ? value : undefined;
+}
 async function loadConfig() {
   const d = await fetchJson(API + "/config");
   const c = d.config || {};
   const i = c.iflow || {};
+  const m = c.market || {};
   const b = c.buff || {};
+  const c5 = c.c5 || {};
   const p = c.pipeline || {};
   const s = c.stability || {};
   const inv = c.inventory || {};
@@ -16,6 +34,8 @@ async function loadConfig() {
   if (gGames) gGames.value = i.type || i.games || "";
   const gPlatforms = el("cfg-platforms");
   if (gPlatforms) gPlatforms.value = i.platforms || "";
+  const gMarketPlatform = el("cfg-market-platform");
+  if (gMarketPlatform) gMarketPlatform.value = (m.platform || "buff").toLowerCase();
   const gSort = el("cfg-sort_by");
   if (gSort) gSort.value = i.sort_by || "";
   const gMinPrice = el("cfg-min_price");
@@ -26,6 +46,16 @@ async function loadConfig() {
   if (gMinVolume) gMinVolume.value = i.min_volume ?? "";
   const gPay = el("cfg-pay_method");
   if (gPay) gPay.value = (b.pay_method || "wechat").toLowerCase();
+  const gC5AppKey = el("cfg-c5-app-key");
+  if (gC5AppKey) gC5AppKey.value = c5.app_key ?? "";
+  const gC5AppSecret = el("cfg-c5-app-secret");
+  if (gC5AppSecret) gC5AppSecret.value = c5.app_secret ?? "";
+  const gC5TradeUrl = el("cfg-c5-trade-url");
+  if (gC5TradeUrl) gC5TradeUrl.value = c5.trade_url ?? "";
+  const gC5Delivery = el("cfg-c5-delivery");
+  if (gC5Delivery) gC5Delivery.value = String(c5.delivery ?? 1);
+  const gC5Tolerance = el("cfg-c5-price-tolerance");
+  if (gC5Tolerance) gC5Tolerance.value = c5.price_tolerance ?? "";
   const gTarget = el("cfg-target_balance");
   if (gTarget) gTarget.value = p.target_balance ?? "";
   const gMaxDisc = el("cfg-max_discount");
@@ -163,39 +193,38 @@ async function loadConfig() {
 }
 
 function formToConfig() {
-  const readNumberInput = (id) => {
-    const node = el(id);
-    if (!node) return undefined;
-    const raw = String(node.value ?? "").trim();
-    if (raw === "") return undefined;
-    const value = Number(raw);
-    return Number.isFinite(value) ? value : undefined;
-  };
-  const readIntInput = (id) => {
-    const value = readNumberInput(id);
-    return value === undefined ? undefined : Math.trunc(value);
-  };
+  const marketPlatform = el("cfg-market-platform") ? el("cfg-market-platform").value : "buff";
   return compactConfig({
+    market: {
+      platform: marketPlatform,
+    },
     iflow: {
       type: el("cfg-games") ? el("cfg-games").value.trim() : undefined,
-      platforms: el("cfg-platforms") ? el("cfg-platforms").value.trim() : undefined,
+      platforms: marketPlatform === "c5" ? "c5" : (el("cfg-platforms") ? el("cfg-platforms").value.trim() : undefined),
       sort_by: el("cfg-sort_by") ? el("cfg-sort_by").value.trim() : undefined,
-      min_price: readNumberInput("cfg-min_price"),
-      max_price: readNumberInput("cfg-max_price"),
-      min_volume: readIntInput("cfg-min_volume"),
+      min_price: optionalFloat("cfg-min_price"),
+      max_price: optionalFloat("cfg-max_price"),
+      min_volume: optionalInt("cfg-min_volume"),
     },
     buff: {
       pay_method: el("cfg-pay_method") ? el("cfg-pay_method").value : undefined,
       game: el("cfg-buff-game") ? el("cfg-buff-game").value.trim() : undefined,
-      price_tolerance: el("cfg-price_tolerance") ? parseFloat(el("cfg-price_tolerance").value) || undefined : undefined,
+      price_tolerance: optionalFloat("cfg-price_tolerance"),
+    },
+    c5: {
+      app_key: el("cfg-c5-app-key") ? el("cfg-c5-app-key").value.trim() : undefined,
+      app_secret: el("cfg-c5-app-secret") ? el("cfg-c5-app-secret").value.trim() : undefined,
+      trade_url: el("cfg-c5-trade-url") ? el("cfg-c5-trade-url").value.trim() : undefined,
+      delivery: optionalInt("cfg-c5-delivery"),
+      price_tolerance: optionalFloat("cfg-c5-price-tolerance"),
     },
     pipeline: {
-      target_balance: el("cfg-target_balance") ? parseFloat(el("cfg-target_balance").value) || undefined : undefined,
-      max_discount: el("cfg-max_discount") ? parseFloat(el("cfg-max_discount").value) || undefined : undefined,
-      huge_profit_offset: el("cfg-huge_profit_offset") ? parseFloat(el("cfg-huge_profit_offset").value) : undefined,
-      iflow_top_n: el("cfg-iflow_top_n") ? parseInt(el("cfg-iflow_top_n").value, 10) || undefined : undefined,
-      sell_price_ratio: el("cfg-sell_ratio") ? parseFloat(el("cfg-sell_ratio").value) || undefined : undefined,
-      retry_interval_seconds: el("cfg-retry_interval_seconds") ? parseInt(el("cfg-retry_interval_seconds").value, 10) || undefined : undefined,
+      target_balance: optionalFloat("cfg-target_balance"),
+      max_discount: optionalFloat("cfg-max_discount"),
+      huge_profit_offset: optionalFloat("cfg-huge_profit_offset"),
+      iflow_top_n: optionalInt("cfg-iflow_top_n"),
+      sell_price_ratio: optionalFloat("cfg-sell_ratio"),
+      retry_interval_seconds: optionalInt("cfg-retry_interval_seconds"),
       exclude_keywords: el("cfg-exclude_keywords") ? Array.from(
         new Set(
           (el("cfg-exclude_keywords").value || "")
@@ -206,46 +235,46 @@ function formToConfig() {
       ) : undefined,
       verbose_debug: el("cfg-verbose-debug") ? el("cfg-verbose-debug").checked : false,
       steam_listings_debug: el("cfg-steam-listings-debug") ? el("cfg-steam-listings-debug").checked : false,
-      sell_strategy: el("cfg-sell_strategy") ? parseInt(el("cfg-sell_strategy").value, 10) || 1 : undefined,
-      sell_price_offset: el("cfg-sell_price_offset") ? parseFloat(el("cfg-sell_price_offset").value) || 0 : undefined,
-      sell_price_wall_volume: el("cfg-sell_price_wall_volume") ? parseInt(el("cfg-sell_price_wall_volume").value, 10) : undefined,
-      sell_price_max_ignore_volume: el("cfg-sell_price_max_ignore_volume") ? parseInt(el("cfg-sell_price_max_ignore_volume").value, 10) : undefined,
-      sell_trend_days: el("cfg-sell_trend_days") ? parseInt(el("cfg-sell_trend_days").value, 10) || undefined : undefined,
-      max_listings_per_item: el("cfg-max_listings_per_item") ? parseInt(el("cfg-max_listings_per_item").value, 10) || undefined : undefined,
-      listing_delay_seconds: el("cfg-listing_delay_seconds") ? parseInt(el("cfg-listing_delay_seconds").value, 10) || undefined : undefined,
-      resell_ratio: el("cfg-resell_ratio") ? parseFloat(el("cfg-resell_ratio").value) || undefined : undefined,
-      safe_purchase_hard_qty_cap: el("cfg-safe_purchase_hard_qty_cap") ? parseInt(el("cfg-safe_purchase_hard_qty_cap").value, 10) : undefined,
-      safe_purchase_liquidity_ratio: el("cfg-safe_purchase_liquidity_ratio") ? parseFloat(el("cfg-safe_purchase_liquidity_ratio").value) : undefined,
-      safe_purchase_low_price_threshold: el("cfg-safe_purchase_low_price_threshold") ? parseFloat(el("cfg-safe_purchase_low_price_threshold").value) : undefined,
-      safe_purchase_low_price_penalty: el("cfg-safe_purchase_low_price_penalty") ? parseFloat(el("cfg-safe_purchase_low_price_penalty").value) : undefined,
-      safe_purchase_low_price_hard_cap: el("cfg-safe_purchase_low_price_hard_cap") ? parseInt(el("cfg-safe_purchase_low_price_hard_cap").value, 10) : undefined,
-      sell_pressure_orders_n: el("cfg-sell_pressure_orders_n") ? parseInt(el("cfg-sell_pressure_orders_n").value, 10) : undefined,
-      sell_pressure_threshold: el("cfg-sell_pressure_threshold") ? parseFloat(el("cfg-sell_pressure_threshold").value) : undefined,
-      current_price_refresh_minutes: el("cfg-current-price-refresh-minutes") ? parseInt(el("cfg-current-price-refresh-minutes").value, 10) || undefined : undefined,
+      sell_strategy: optionalInt("cfg-sell_strategy") || 1,
+      sell_price_offset: optionalFloat("cfg-sell_price_offset") ?? 0,
+      sell_price_wall_volume: optionalInt("cfg-sell_price_wall_volume"),
+      sell_price_max_ignore_volume: optionalInt("cfg-sell_price_max_ignore_volume"),
+      sell_trend_days: optionalInt("cfg-sell_trend_days"),
+      max_listings_per_item: optionalInt("cfg-max_listings_per_item"),
+      listing_delay_seconds: optionalInt("cfg-listing_delay_seconds"),
+      resell_ratio: optionalFloat("cfg-resell_ratio"),
+      safe_purchase_hard_qty_cap: optionalInt("cfg-safe_purchase_hard_qty_cap"),
+      safe_purchase_liquidity_ratio: optionalFloat("cfg-safe_purchase_liquidity_ratio"),
+      safe_purchase_low_price_threshold: optionalFloat("cfg-safe_purchase_low_price_threshold"),
+      safe_purchase_low_price_penalty: optionalFloat("cfg-safe_purchase_low_price_penalty"),
+      safe_purchase_low_price_hard_cap: optionalInt("cfg-safe_purchase_low_price_hard_cap"),
+      sell_pressure_orders_n: optionalInt("cfg-sell_pressure_orders_n"),
+      sell_pressure_threshold: optionalFloat("cfg-sell_pressure_threshold"),
+      current_price_refresh_minutes: optionalInt("cfg-current-price-refresh-minutes"),
       start_time_limit_enabled: !!el("cfg-start-time-limit-enabled")?.checked,
       start_time_hour: el("cfg-start-time-hour") ? (parseInt(el("cfg-start-time-hour").value, 10) >= 0 && parseInt(el("cfg-start-time-hour").value, 10) <= 23 ? parseInt(el("cfg-start-time-hour").value, 10) : undefined) : undefined,
       end_time_hour: el("cfg-end-time-hour") ? (parseInt(el("cfg-end-time-hour").value, 10) >= 0 && parseInt(el("cfg-end-time-hour").value, 10) <= 23 ? parseInt(el("cfg-end-time-hour").value, 10) : undefined) : undefined,
     },
     stability: {
-      days: el("cfg-stability-days") ? parseInt(el("cfg-stability-days").value, 10) || undefined : undefined,
-      cv_threshold: el("cfg-cv_threshold") ? parseFloat(el("cfg-cv_threshold").value) || undefined : undefined,
-      r2_threshold: el("cfg-r2_threshold") ? parseFloat(el("cfg-r2_threshold").value) || undefined : undefined,
-      price_percentile_ceil: el("cfg-price_percentile_ceil") ? parseFloat(el("cfg-price_percentile_ceil").value) : undefined,
-      r2_rising_threshold: el("cfg-r2_rising_threshold") ? parseFloat(el("cfg-r2_rising_threshold").value) : undefined,
-      slope_pct_ceil: el("cfg-slope_pct_ceil") ? parseFloat(el("cfg-slope_pct_ceil").value) : undefined,
-      ma_deviation_ceil: el("cfg-ma_deviation_ceil") ? parseFloat(el("cfg-ma_deviation_ceil").value) : undefined,
-      last_price_ma30_ceil: el("cfg-last_price_ma30_ceil") ? parseFloat(el("cfg-last_price_ma30_ceil").value) : undefined,
-      slope_stable_floor: el("cfg-slope_stable_floor") ? parseFloat(el("cfg-slope_stable_floor").value) : undefined,
-      price_percentile_ceil_rising: el("cfg-price_percentile_ceil_rising") ? parseFloat(el("cfg-price_percentile_ceil_rising").value) : undefined,
+      days: optionalInt("cfg-stability-days"),
+      cv_threshold: optionalFloat("cfg-cv_threshold"),
+      r2_threshold: optionalFloat("cfg-r2_threshold"),
+      price_percentile_ceil: optionalFloat("cfg-price_percentile_ceil"),
+      r2_rising_threshold: optionalFloat("cfg-r2_rising_threshold"),
+      slope_pct_ceil: optionalFloat("cfg-slope_pct_ceil"),
+      ma_deviation_ceil: optionalFloat("cfg-ma_deviation_ceil"),
+      last_price_ma30_ceil: optionalFloat("cfg-last_price_ma30_ceil"),
+      slope_stable_floor: optionalFloat("cfg-slope_stable_floor"),
+      price_percentile_ceil_rising: optionalFloat("cfg-price_percentile_ceil_rising"),
       use_vwap: el("cfg-use_vwap") ? el("cfg-use_vwap").checked : undefined,
     },
     inventory: {
-      refresh_seconds: el("cfg-inv-refresh") ? parseInt(el("cfg-inv-refresh").value, 10) || undefined : undefined,
+      refresh_seconds: optionalInt("cfg-inv-refresh"),
     },
     notify: {
       pushplus_token: el("cfg-pushplus_token") ? el("cfg-pushplus_token").value.trim() : undefined,
-      holdings_report_interval_hours: el("cfg-holdings_report_interval_hours") ? parseInt(el("cfg-holdings_report_interval_hours").value, 10) : undefined,
-      holdings_report_change_threshold_pct: el("cfg-holdings_report_change_threshold_pct") ? parseFloat(el("cfg-holdings_report_change_threshold_pct").value) : undefined,
+      holdings_report_interval_hours: optionalInt("cfg-holdings_report_interval_hours"),
+      holdings_report_change_threshold_pct: optionalInt("cfg-holdings_report_change_threshold_pct"),
       holdings_report_drop_enabled: el("cfg-holdings-drop-enabled") ? !!el("cfg-holdings-drop-enabled").checked : undefined,
       email_user: el("cfg-email_user") ? el("cfg-email_user").value.trim() : undefined,
       email_pass: el("cfg-email_pass") ? el("cfg-email_pass").value.trim() : undefined,
@@ -254,7 +283,7 @@ function formToConfig() {
       allowed_sender: el("cfg-allowed_sender") ? el("cfg-allowed_sender").value.trim() : undefined,
       subject_success: el("cfg-subject_success") ? el("cfg-subject_success").value.trim() : undefined,
       subject_fail: el("cfg-subject_fail") ? el("cfg-subject_fail").value.trim() : undefined,
-      email_timeout_seconds: el("cfg-email_timeout_seconds") ? parseInt(el("cfg-email_timeout_seconds").value, 10) || undefined : undefined,
+      email_timeout_seconds: optionalInt("cfg-email_timeout_seconds"),
     },
     steam_guard: {
       shared_secret: el("cfg-steam-shared-secret") ? el("cfg-steam-shared-secret").value.trim() : undefined,
@@ -265,14 +294,14 @@ function formToConfig() {
       device_id: el("cfg-steam-device-id") ? el("cfg-steam-device-id").value.trim() : undefined,
     },
     system: {
-      exchange_rate_refresh_hours: el("cfg-exchange-refresh-hours") ? parseFloat(el("cfg-exchange-refresh-hours").value) || undefined : undefined,
+      exchange_rate_refresh_hours: optionalFloat("cfg-exchange-refresh-hours"),
       ui_scale: el("cfg-ui_scale") ? el("cfg-ui_scale").value : undefined,
     },
     steam_deals: {
       enabled: !!el("cfg-steam-deals-enabled")?.checked,
-      auto_refresh_days: el("cfg-steam-deals-auto-refresh-days") ? parseInt(el("cfg-steam-deals-auto-refresh-days").value, 10) : undefined,
-      max_game_threads: el("cfg-steam-deals-game-threads") ? parseInt(el("cfg-steam-deals-game-threads").value, 10) || undefined : undefined,
-      max_region_threads: el("cfg-steam-deals-region-threads") ? parseInt(el("cfg-steam-deals-region-threads").value, 10) || undefined : undefined,
+      auto_refresh_days: optionalInt("cfg-steam-deals-auto-refresh-days"),
+      max_game_threads: optionalInt("cfg-steam-deals-game-threads"),
+      max_region_threads: optionalInt("cfg-steam-deals-region-threads"),
     },
   });
 }

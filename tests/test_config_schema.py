@@ -52,6 +52,28 @@ def test_validate_iflow_min_price_zero_is_preserved():
     assert result["iflow"]["min_price"] == 0
 
 
+def test_validate_iflow_min_price_keeps_decimal():
+    result = validate_and_fill({"iflow": {"min_price": "0.05"}}, DEFAULTS)
+
+    assert isinstance(result["iflow"]["min_price"], float)
+    assert result["iflow"]["min_price"] == 0.05
+
+
+def test_validate_decimal_config_fields_keep_decimal():
+    data = {
+        "iflow": {"max_price": "5.5"},
+        "pipeline": {"target_balance": "10.5", "sell_price_offset": "-0.05"},
+        "system": {"exchange_rate_refresh_hours": "0.5"},
+    }
+
+    result = validate_and_fill(data, DEFAULTS)
+
+    assert result["iflow"]["max_price"] == 5.5
+    assert result["pipeline"]["target_balance"] == 10.5
+    assert result["pipeline"]["sell_price_offset"] == -0.05
+    assert result["system"]["exchange_rate_refresh_hours"] == 0.5
+
+
 def test_validate_缺少section用默认值():
     result = validate_and_fill({}, DEFAULTS)
     assert result["stability"]["cv_threshold"] == DEFAULTS["stability"]["cv_threshold"]
@@ -94,3 +116,19 @@ def test_range_price_tolerance负数被限制():
         warnings.simplefilter("always")
         result = _validate_ranges(cfg)
     assert result["buff"]["price_tolerance"] >= 0.0
+
+
+def test_range_market_platform非法值被修正():
+    cfg = merge(DEFAULTS, {"market": {"platform": "unknown"}})
+    with warnings.catch_warnings(record=True):
+        warnings.simplefilter("always")
+        result = _validate_ranges(cfg)
+    assert result["market"]["platform"] == "buff"
+
+
+def test_range_c5_price_tolerance负数被限制():
+    cfg = merge(DEFAULTS, {"c5": {"price_tolerance": -1.0}})
+    with warnings.catch_warnings(record=True):
+        warnings.simplefilter("always")
+        result = _validate_ranges(cfg)
+    assert result["c5"]["price_tolerance"] >= 0.0
