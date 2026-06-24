@@ -50,11 +50,11 @@ def test_missing_rate_aborts_listing_plan():
 
         result = _build_listing_plan(
             ctx=ctx,
-            cfg={"pipeline": {}},
+            cfg={"pipeline": {"profit_ratio_multiplier": 1.03}},
             session=MagicMock(),
             sellable=_make_sellable(),
             sell_strategy=1,
-            pipeline_cfg={},
+            pipeline_cfg={"profit_ratio_multiplier": 1.03},
             purchases_snapshot=[{"assetid": "12345678", "market_hash_name": "AK-47 | Redline"}],
             ok_listings=False,
             active_listing_ids=set(),
@@ -91,11 +91,11 @@ def test_valid_rate_converts_price():
 
         result = _build_listing_plan(
             ctx=ctx,
-            cfg={"pipeline": {}},
+            cfg={"pipeline": {"profit_ratio_multiplier": 1.03}},
             session=MagicMock(),
             sellable=_make_sellable(),
             sell_strategy=1,
-            pipeline_cfg={},
+            pipeline_cfg={"profit_ratio_multiplier": 1.03},
             purchases_snapshot=[{"assetid": "12345678", "market_hash_name": "AK-47 | Redline"}],
             ok_listings=False,
             active_listing_ids=set(),
@@ -123,7 +123,7 @@ def test_same_name_purchase_does_not_allow_auto_sell():
     with patch("app.sell_pipeline.get_sell_orders_cny") as mock_orders:
         result = _build_listing_plan(
             ctx=ctx,
-            cfg={"pipeline": {}},
+            cfg={"pipeline": {"profit_ratio_multiplier": 1.03}},
             session=MagicMock(),
             sellable=[{
                 "name": "AK-47 | Redline",
@@ -134,7 +134,7 @@ def test_same_name_purchase_does_not_allow_auto_sell():
                 "contextid": "2",
             }],
             sell_strategy=1,
-            pipeline_cfg={},
+            pipeline_cfg={"profit_ratio_multiplier": 1.03},
             purchases_snapshot=[{
                 "assetid": "bought-asset",
                 "market_hash_name": "AK-47 | Redline",
@@ -166,7 +166,7 @@ def test_strategy3_uses_strict_ratio_multiplier():
 
         result = _build_listing_plan(
             ctx=ctx,
-            cfg={"pipeline": {}},
+            cfg={"pipeline": {"profit_ratio_multiplier": 1.03}},
             session=MagicMock(),
             sellable=[{
                 "name": "Dreams & Nightmares Case",
@@ -177,7 +177,7 @@ def test_strategy3_uses_strict_ratio_multiplier():
                 "contextid": "2",
             }],
             sell_strategy=3,
-            pipeline_cfg={},
+            pipeline_cfg={"profit_ratio_multiplier": 1.03},
             purchases_snapshot=[{
                 "assetid": "case-asset",
                 "market_hash_name": "Dreams & Nightmares Case",

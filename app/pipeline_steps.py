@@ -13,6 +13,7 @@ from app.services.analysis_client import StabilityAnalyzer
 from app.services.buff_client import count_lowest_price_orders, first_order_at_price
 from app.services.c5_client import C5ApiError
 from app.notify import send_pushplus, build_payment_notify_content, wait_email_command
+from app.purchase_limit import calculate_safe_purchase_limit
 from utils.delay import jittered_sleep
 from buff.buyer import BuffAuthExpired, BuffVerificationRequired
 
@@ -1112,6 +1113,28 @@ def c5_buy_and_record(
             log_fn(f"[C5]   → 当前价较参考价超出容忍 (差{lowest_price - plan_price:.2f})，跳过", "warn")
         return None
 
+    scfg = config.get("pipeline", {})
+    safe_limit = calculate_safe_purchase_limit(
+        item_price=lowest_price,
+        daily_volume=int(item.get("daily_volume", 0) or 0),
+        hard_qty_cap=int(scfg.get("safe_purchase_hard_qty_cap", 50)),
+        liquidity_ratio=float(scfg.get("safe_purchase_liquidity_ratio", 0.05)),
+        low_price_threshold=float(scfg.get("safe_purchase_low_price_threshold", 5.0)),
+        low_price_penalty=float(scfg.get("safe_purchase_low_price_penalty", 0.5)),
+        low_price_hard_cap=int(scfg.get("safe_purchase_low_price_hard_cap", 30)),
+    )
+    if market_hash_name:
+        purchases_snapshot = get_purchases()
+        holdings = [p for p in purchases_snapshot if not (p.get("sale_price") and float(p.get("sale_price", 0) or 0) > 0)]
+        held_same = sum(1 for p in holdings if (p.get("name") or "").strip() == market_hash_name)
+        safe_limit = max(0, safe_limit - held_same)
+        if log_fn and held_same > 0:
+            log_fn(f"[C5]   → 已持有同名(英文) {held_same} 件，安全上限 {safe_limit + held_same} → {safe_limit}", "info")
+    if safe_limit <= 0:
+        if log_fn:
+            log_fn("[C5]   → 安全采购上限=0（流动性不足或低价惩罚），跳过本件", "warn")
+        return SKIP_NO_FAILED
+
     if market_price is None:
         steam_sell_data = item.get("_steam_sell_data")
         market_price = steam_sell_data.get("smart_price") if steam_sell_data else None
@@ -1160,7 +1183,7 @@ def c5_buy_and_record(
     start = time.time()
     detail: Dict[str, Any] = {}
     is_confirmed = False
-    success_statuses = {"3", "10", "200"}
+    success_statuses = {"1", "3", "10", "200"}
     failure_statuses = {"11", "220"}
     while detail_order_id and not is_stop_requested() and time.time() - start < timeout_sec:
         try:

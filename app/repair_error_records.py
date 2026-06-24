@@ -142,7 +142,7 @@ def _norm_name(s: str) -> str:
     s = s.replace("(Factory New)", "(FN)").replace("(Minimal Wear)", "(MW)")
     s = s.replace("(Field-Tested)", "(FT)").replace("(Well-Worn)", "(WW)").replace("(Battle-Scarred)", "(BS)")
     return s.strip()
-def _build_merged(inv_items: list, sold_map: dict, sold_names: dict, listing_assetids: set, listing_name_by_assetid: dict) -> tuple:
+def _build_merged(inv_items: list, listing_assetids: set, listing_name_by_assetid: dict) -> tuple:
     all_assetids = set()
     name_to_candidates = defaultdict(list)
     for it in inv_items or []:
@@ -153,13 +153,6 @@ def _build_merged(inv_items: list, sold_map: dict, sold_names: dict, listing_ass
         all_assetids.add(aid)
         if name:
             name_to_candidates[name].append({"assetid": aid, "source": "inventory", "sale_price": None})
-    for aid, price in (sold_map or {}).items():
-        aid = str(aid).strip()
-        name = _norm_name((sold_names or {}).get(aid, ""))
-        if not aid:
-            continue
-        all_assetids.add(aid)
-        name_to_candidates[name].append({"assetid": aid, "source": "sold", "sale_price": price})
     for aid in listing_assetids or set():
         aid = str(aid).strip()
         name = _norm_name((listing_name_by_assetid or {}).get(aid, ""))
@@ -168,7 +161,7 @@ def _build_merged(inv_items: list, sold_map: dict, sold_names: dict, listing_ass
         all_assetids.add(aid)
         name_to_candidates[name].append({"assetid": aid, "source": "listing", "sale_price": None})
     for name in name_to_candidates:
-        name_to_candidates[name].sort(key=lambda x: (0 if x["source"] == "sold" else 1 if x["source"] == "listing" else 2, x["assetid"]))
+        name_to_candidates[name].sort(key=lambda x: (0 if x["source"] == "listing" else 1, x["assetid"]))
     return all_assetids, name_to_candidates
 def _record_name_counts(purchases: list) -> dict:
     out = defaultdict(int)
@@ -186,7 +179,7 @@ def _gather_candidates_for_record_name(record_name: str, name_to_candidates: dic
         if record_name.startswith(list_name + " "):
             prefix_match.extend(cands)
     combined = exact + prefix_match
-    combined.sort(key=lambda x: (0 if x["source"] == "sold" else 1 if x["source"] == "listing" else 2, x["assetid"]))
+    combined.sort(key=lambda x: (0 if x["source"] == "listing" else 1, x["assetid"]))
     return combined
 def _filter_list_by_record_names(name_to_candidates: dict, record_name_counts: dict) -> dict:
     filtered = defaultdict(list)
@@ -204,12 +197,7 @@ def _pick_candidate(name_to_candidates: dict, name: str, used_assetids: set) -> 
     return None
 def _apply_candidate(purchase: dict, c: dict, sold_at: float) -> None:
     purchase["assetid"] = c["assetid"]
-    if c["source"] == "sold":
-        purchase["sale_price"] = c["sale_price"]
-        purchase["sold_at"] = sold_at
-        purchase["listing"] = False
-        purchase["listing_status"] = None
-    elif c["source"] == "listing":
+    if c["source"] == "listing":
         purchase["listing"] = True
         purchase["listing_status"] = None
         if "sale_price" not in purchase:
@@ -223,8 +211,19 @@ def _apply_candidate(purchase: dict, c: dict, sold_at: float) -> None:
             purchase["sale_price"] = None
         if "sold_at" not in purchase:
             purchase["sold_at"] = None
-def _clear_assetids(purchases: list) -> None:
+def _needs_repair(p: dict) -> bool:
+    if p.get("pending_receipt"):
+        return False
+    if p.get("sale_price") is not None and float(p.get("sale_price") or 0) > 0:
+        return False
+    if p.get("sold_at") is not None:
+        return False
+    return bool(p.get("listing_status") == "error" or not p.get("assetid"))
+def _clear_repair_targets(purchases: list) -> int:
+    cleared = 0
     for p in purchases:
+        if not _needs_repair(p):
+            continue
         if "assetid" in p:
             del p["assetid"]
         p["listing"] = False
@@ -233,10 +232,16 @@ def _clear_assetids(purchases: list) -> None:
             p["sale_price"] = None
         if "sold_at" in p:
             p["sold_at"] = None
+        cleared += 1
+    return cleared
 def _refill_from_list(purchases: list, name_to_candidates: dict, sold_at: float) -> int:
     used_assetids = set()
     filled = 0
     for p in purchases:
+        if not _needs_repair(p):
+            if p.get("assetid"):
+                used_assetids.add(str(p.get("assetid")))
+            continue
         name = _norm_name(p.get("name") or "")
         if not name:
             continue
@@ -265,9 +270,9 @@ def run(log_fn=None):
     from app.state import get_purchases, get_sales, replace_transactions
     purchases = list(get_purchases() or [])
     sales = list(get_sales() or [])
-    _clear_assetids(purchases)
+    cleared = _clear_repair_targets(purchases)
     if log_fn:
-        log_fn("已清空所有操作记录的 assetid", "info")
+        log_fn(f"已清空 {cleared} 条待修复记录的 assetid/异常状态", "info")
     inv_items = []
     if log_fn:
         log_fn("正在拉取 CS2 库存…", "info")
@@ -279,16 +284,6 @@ def run(log_fn=None):
     except Exception as e:
         if log_fn:
             log_fn(f"拉取库存异常: {e}", "warn")
-    if log_fn:
-        log_fn("正在拉取 Steam 市场历史 Sold 记录…", "info")
-    try:
-        sold_map, sold_names = _fetch_sold_with_names(c)
-        if log_fn:
-            log_fn(f"解析到售出 {len(sold_map)} 条", "info")
-    except Exception as e:
-        if log_fn:
-            log_fn(f"拉取售出历史异常: {e}", "error")
-        return False, {"error": str(e)[:200]}
     if log_fn:
         log_fn("正在拉取出售中列表…", "info")
     listing_assetids = set()
@@ -304,16 +299,17 @@ def run(log_fn=None):
     except Exception as e:
         if log_fn:
             log_fn(f"拉取在售列表异常: {e}", "warn")
-    _, name_to_candidates = _build_merged(inv_items, sold_map, sold_names, listing_assetids, listing_name_by_assetid)
-    record_name_counts = _record_name_counts(purchases)
+    _, name_to_candidates = _build_merged(inv_items, listing_assetids, listing_name_by_assetid)
+    repair_targets = [p for p in purchases if _needs_repair(p)]
+    record_name_counts = _record_name_counts(repair_targets)
     name_to_candidates = _filter_list_by_record_names(name_to_candidates, record_name_counts)
     list_total = sum(len(cands) for cands in name_to_candidates.values())
-    record_total = sum(1 for p in purchases if _norm_name(p.get("name") or ""))
+    record_total = sum(1 for p in repair_targets if _norm_name(p.get("name") or ""))
     if log_fn:
         log_fn(f"按操作记录名称筛选列表后，列表条数 {list_total}，待填记录数 {record_total}", "info")
     sold_at = time.time()
     filled = _refill_from_list(purchases, name_to_candidates, sold_at)
-    missing = sum(1 for p in purchases if not p.get("assetid"))
+    missing = sum(1 for p in purchases if _needs_repair(p) and not p.get("assetid"))
     if log_fn:
         log_fn(f"按名称从列表重新填入 {filled} 条，状态已更新（持有中/已出售/出售中）", "info")
         if missing:

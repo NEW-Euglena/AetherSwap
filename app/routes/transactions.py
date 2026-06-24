@@ -1,5 +1,5 @@
 """Transaction routes (purchases, sales, stats, delist, sync)."""
-from typing import Optional
+from typing import List, Optional
 from fastapi import APIRouter
 from pydantic import BaseModel
 from app.state import (
@@ -46,6 +46,12 @@ class TransactionUpdateBody(BaseModel):
     order_id: Optional[str] = None
     product_id: Optional[str] = None
     out_trade_no: Optional[str] = None
+class RestoreHoldingBody(BaseModel):
+    indices: List[int] = []
+    db_ids: List[int] = []
+class PurchaseBatchBody(BaseModel):
+    indices: List[int] = []
+    db_ids: List[int] = []
 def _name_from_steam_link(steam_link: str) -> Optional[str]:
     from steam.client import market_hash_name_from_listing_url
     url = (steam_link or "").strip()
@@ -206,6 +212,138 @@ def api_update_transaction(body: TransactionUpdateBody):
     else:
         return {"ok": False, "error": "type 须为 purchase 或 sale"}
     return {"ok": ok, "error": None if ok else "更新失败（记录不存在或无效）"} if ok else {"ok": False, "error": "更新失败"}
+@router.post("/api/purchases/restore-holding")
+def api_restore_purchases_holding(body: RestoreHoldingBody):
+    data = {"sale_price": None, "sold_at": None, "listing": False, "listing_status": None}
+    restored = 0
+    failed = []
+    seen = set()
+    for db_id in body.db_ids or []:
+        try:
+            db_id_int = int(db_id)
+        except (TypeError, ValueError):
+            failed.append({"db_id": db_id, "error": "db_id 无效"})
+            continue
+        key = ("db", db_id_int)
+        if key in seen:
+            continue
+        seen.add(key)
+        if update_purchase_by_id(db_id_int, data):
+            restored += 1
+        else:
+            failed.append({"db_id": db_id_int, "error": "记录不存在或更新失败"})
+    for idx in body.indices or []:
+        try:
+            idx_int = int(idx)
+        except (TypeError, ValueError):
+            failed.append({"idx": idx, "error": "idx 无效"})
+            continue
+        key = ("idx", idx_int)
+        if key in seen:
+            continue
+        seen.add(key)
+        if update_purchase(idx_int, data):
+            restored += 1
+        else:
+            failed.append({"idx": idx_int, "error": "记录不存在或更新失败"})
+    ok = not failed
+    return {"ok": ok, "restored": restored, "failed": failed}
+
+def _resolve_purchase_targets(body: PurchaseBatchBody):
+    purchases = get_purchases()
+    targets = []
+    failed = []
+    seen = set()
+    for db_id in body.db_ids or []:
+        try:
+            db_id_int = int(db_id)
+        except (TypeError, ValueError):
+            failed.append({"db_id": db_id, "error": "db_id 无效"})
+            continue
+        found_idx = None
+        for i, p in enumerate(purchases):
+            if int(p.get("_db_id") or 0) == db_id_int:
+                found_idx = i
+                break
+        if found_idx is None:
+            failed.append({"db_id": db_id_int, "error": "记录不存在或更新失败"})
+            continue
+        key = ("idx", found_idx)
+        if key in seen:
+            continue
+        seen.add(key)
+        targets.append({"idx": found_idx, "db_id": db_id_int})
+    for idx in body.indices or []:
+        try:
+            idx_int = int(idx)
+        except (TypeError, ValueError):
+            failed.append({"idx": idx, "error": "idx 无效"})
+            continue
+        if idx_int < 0 or idx_int >= len(purchases):
+            failed.append({"idx": idx_int, "error": "索引无效"})
+            continue
+        key = ("idx", idx_int)
+        if key in seen:
+            continue
+        seen.add(key)
+        targets.append({"idx": idx_int, "db_id": purchases[idx_int].get("_db_id")})
+    return targets, failed
+
+def _delist_purchase_idx(idx: int):
+    from app.steam_delist import delist_item
+    purchases = get_purchases()
+    if idx < 0 or idx >= len(purchases):
+        return {"ok": False, "idx": idx, "error": "索引无效"}
+    p = purchases[idx]
+    if not p.get("listing"):
+        return {"ok": False, "idx": idx, "error": "该记录非出售中状态"}
+    assetid = str(p.get("assetid") or "").strip()
+    if not assetid:
+        return {"ok": False, "idx": idx, "error": "无 assetid"}
+    name = (p.get("name") or "").strip()
+    def log_fn(msg: str, level: str = "info"):
+        log(msg, level, category="delist")
+    ok, new_assetid, err = delist_item(assetid, name, log_fn=log_fn)
+    if not ok:
+        log(err or "下架失败", "error", category="delist")
+        return {"ok": False, "idx": idx, "assetid": assetid, "error": err}
+    update_purchase(idx, {"assetid": new_assetid, "listing": False, "listing_status": None})
+    out = {"ok": True, "idx": idx, "assetid": new_assetid, "old_assetid": assetid, "name": name}
+    if new_assetid is None:
+        out["message"] = "下架成功，但未检测到新 assetid，正自动尝试同步补全..."
+        log_fn("未检测到新 assetid，开始自动同步售出/持有", "info")
+        from app.sync_sold import run_sync_sold_from_history
+        try:
+            ok_s, res_s = run_sync_sold_from_history(log_fn=log_fn)
+            if ok_s:
+                reload_transactions()
+                pur = get_purchases()
+                if 0 <= idx < len(pur):
+                    auto_assetid = pur[idx].get("assetid")
+                    if auto_assetid:
+                        out["assetid"] = auto_assetid
+                        out["message"] = f"自动同步成功，已补全 assetid: {auto_assetid}"
+                        update_purchase(idx, {"assetid": auto_assetid, "listing": False, "listing_status": None})
+        except Exception as e:
+            log_fn(f"自动同步失败: {e}", "error")
+    return out
+
+@router.post("/api/purchases/delist")
+def api_batch_delist_purchases(body: PurchaseBatchBody):
+    targets, failed = _resolve_purchase_targets(body)
+    if not targets and not failed:
+        return {"ok": False, "delisted": 0, "failed": [], "results": [], "error": "未选择记录"}
+    results = []
+    delisted = 0
+    for target in targets:
+        result = _delist_purchase_idx(int(target["idx"]))
+        if result.get("ok"):
+            delisted += 1
+            results.append(result)
+        else:
+            failed.append({"idx": target["idx"], "db_id": target.get("db_id"), "error": result.get("error", "下架失败")})
+    return {"ok": not failed, "delisted": delisted, "failed": failed, "results": results}
+
 @router.get("/api/stats")
 def api_stats():
     purchases = get_purchases()
@@ -241,43 +379,7 @@ def api_stats():
     }
 @router.post("/api/purchase/{idx}/delist")
 def api_delist_purchase(idx: int):
-    from app.steam_delist import delist_item
-    purchases = get_purchases()
-    if idx < 0 or idx >= len(purchases):
-        return {"ok": False, "error": "索引无效"}
-    p = purchases[idx]
-    if not p.get("listing"):
-        return {"ok": False, "error": "该记录非出售中状态"}
-    assetid = str(p.get("assetid") or "").strip()
-    if not assetid:
-        return {"ok": False, "error": "无 assetid"}
-    name = (p.get("name") or "").strip()
-    def log_fn(msg: str, level: str = "info"):
-        log(msg, level, category="delist")
-    ok, new_assetid, err = delist_item(assetid, name, log_fn=log_fn)
-    if not ok:
-        log(err or "下架失败", "error", category="delist")
-        return {"ok": False, "error": err}
-    update_purchase(idx, {"assetid": new_assetid, "listing": False, "listing_status": None})
-    out = {"ok": True, "assetid": new_assetid}
-    if new_assetid is None:
-        out["message"] = "下架成功，但未检测到新 assetid，正自动尝试同步补全..."
-        log_fn("未检测到新 assetid，开始自动同步售出/持有", "info")
-        from app.sync_sold import run_sync_sold_from_history
-        try:
-            ok_s, res_s = run_sync_sold_from_history(log_fn=log_fn)
-            if ok_s:
-                reload_transactions()
-                pur = get_purchases()
-                if 0 <= idx < len(pur):
-                    auto_assetid = pur[idx].get("assetid")
-                    if auto_assetid:
-                        out["assetid"] = auto_assetid
-                        out["message"] = f"自动同步成功，已补全 assetid: {auto_assetid}"
-                        update_purchase(idx, {"assetid": auto_assetid, "listing": False, "listing_status": None})
-        except Exception as e:
-            log_fn(f"自动同步失败: {e}", "error")
-    return out
+    return _delist_purchase_idx(idx)
 @router.post("/api/sync_sold_from_history")
 def api_sync_sold_from_history():
     from app.sync_sold import run_sync_sold_from_history

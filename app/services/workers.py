@@ -264,6 +264,55 @@ def receive_worker() -> None:
             log(f"receive_worker 异常 {type(e).__name__}: {e}", "error", category="receive")
             _worker_alert("receive_worker", e)
             time.sleep(60)
+
+def _reconcile_missing_active_listings(
+    not_in_active: list,
+    sold_map: dict,
+    history_ok: bool,
+    update_by_id,
+    update_by_idx,
+    get_current_purchases,
+    log_fn,
+) -> int:
+    """只在历史记录明确命中时确认售出；不因单次在售缺失写 ERROR。"""
+    seen_aids = set()
+    sold_updates = 0
+    unresolved = 0
+    for _i, p in not_in_active:
+        aid = str(p.get("assetid") or "")
+        if not aid or aid in seen_aids:
+            continue
+        seen_aids.add(aid)
+        db_id = p.get("_db_id")
+        sale_price_rounded = round(sold_map[aid], 2) if (history_ok and aid in sold_map) else None
+        if sale_price_rounded is not None:
+            sold_at = time.time()
+            data = {
+                "sale_price": sale_price_rounded,
+                "sold_at": sold_at,
+                "listing": False,
+                "listing_status": None,
+            }
+            if db_id:
+                if update_by_id(db_id, data):
+                    sold_updates += 1
+            else:
+                current = get_current_purchases()
+                matched = [j for j, q in enumerate(current) if str(q.get("assetid") or "") == aid]
+                for idx in matched:
+                    update_by_idx(idx, data)
+                if matched:
+                    sold_updates += 1
+            continue
+        unresolved += 1
+    if unresolved:
+        log_fn(
+            f"[listing_check] {unresolved} 条本地在售未在 Steam 活跃列表命中，且历史未确认售出；保留出售中状态，避免误标 ERROR",
+            "warn",
+            category="steam",
+        )
+    return sold_updates
+
 def listing_check_worker() -> None:
     from app.steam_listings import fetch_my_listings, fetch_my_history_sold
     while True:
@@ -293,34 +342,15 @@ def listing_check_worker() -> None:
             if not not_in_active:
                 continue
             ok2, sold_map, _ = fetch_my_history_sold(cookies, debug_fn=debug_fn)
-            seen_aids = set()
-            sold_updates = 0
-            for _i, p in not_in_active:
-                aid = str(p.get("assetid") or "")
-                if not aid or aid in seen_aids:
-                    continue
-                seen_aids.add(aid)
-                db_id = p.get("_db_id")
-                sale_price_rounded = round(sold_map[aid], 2) if (ok2 and aid in sold_map) else None
-                if db_id:
-                    if sale_price_rounded is not None:
-                        sold_at = time.time()
-                        update_purchase_by_id(db_id, {"sale_price": sale_price_rounded, "sold_at": sold_at, "listing": False, "listing_status": None})
-                        sold_updates += 1
-                    else:
-                        update_purchase_by_id(db_id, {"listing": False, "listing_status": "error"})
-                else:
-                    current = get_purchases()
-                    matched = [j for j, q in enumerate(current) if str(q.get("assetid") or "") == aid]
-                    if sale_price_rounded is not None:
-                        sold_at = time.time()
-                        for idx in matched:
-                            update_purchase(idx, {"sale_price": sale_price_rounded, "sold_at": sold_at, "listing": False, "listing_status": None})
-                        if matched:
-                            sold_updates += 1
-                    else:
-                        for idx in matched:
-                            update_purchase(idx, {"listing": False, "listing_status": "error"})
+            sold_updates = _reconcile_missing_active_listings(
+                not_in_active,
+                sold_map,
+                ok2,
+                update_purchase_by_id,
+                update_purchase,
+                get_purchases,
+                log,
+            )
             if sold_updates > 0:
                 log(f"[listing_check] 确认售出 {sold_updates} 件，刷新库存并触发自动补挂", "info", category="steam")
                 ok_inv, inv_items, inv_err = scan_cs2_inventory()

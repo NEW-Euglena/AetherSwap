@@ -208,6 +208,7 @@ class _C5Client:
     def __init__(self, details):
         self.details = list(details)
         self.detail_order_ids = []
+        self.buy_calls = []
 
     def get_balance(self):
         return 100
@@ -219,6 +220,7 @@ class _C5Client:
         return "trade-1"
 
     def buy_product(self, product_id, buy_price, out_trade_no=None):
+        self.buy_calls.append((product_id, buy_price, out_trade_no))
         return {
             "order_id": "order-1",
             "order_asset_id": "order-asset-1",
@@ -237,11 +239,12 @@ def test_c5_buy_处理中状态不写采购记录(monkeypatch):
     times = iter([0, 0, 2])
     monkeypatch.setattr(steps.time, "time", lambda: next(times, 2))
     monkeypatch.setattr(steps.time, "sleep", lambda _: None)
+    monkeypatch.setattr(steps, "get_purchases", lambda: [])
     records = []
 
     paid = c5_buy_and_record(
         _C5Client([{"status": 2, "statusName": "处理中"}]),
-        {"name": "Test Item", "min_price": 10.0},
+        {"name": "Test Item", "min_price": 10.0, "daily_volume": 100},
         {"c5": {"order_timeout_seconds": 1, "order_poll_interval_seconds": 1}},
         100,
         0,
@@ -254,14 +257,41 @@ def test_c5_buy_处理中状态不写采购记录(monkeypatch):
     assert records == []
 
 
+def test_c5_buy_waiting_delivery_writes_pending_record(monkeypatch):
+    monkeypatch.setattr(steps.time, "time", lambda: 0)
+    monkeypatch.setattr(steps.time, "sleep", lambda _: (_ for _ in ()).throw(AssertionError("不应等待发货")))
+    monkeypatch.setattr(steps, "get_purchases", lambda: [])
+    records = []
+    client = _C5Client([{"status": 1, "statusName": "waiting_delivery"}])
+
+    paid = c5_buy_and_record(
+        client,
+        {"name": "Test Item", "min_price": 10.0, "daily_volume": 100},
+        {"c5": {"order_timeout_seconds": 300, "order_poll_interval_seconds": 15}},
+        100,
+        0,
+        lambda: False,
+        records.append,
+        market_price=12.0,
+    )
+
+    assert paid == 10.0
+    assert len(records) == 1
+    assert records[0]["pending_receipt"] is True
+    assert records[0]["platform"] == "c5"
+    assert records[0]["order_id"] == "order-asset-1"
+    assert client.detail_order_ids == ["order-asset-1"]
+
+
 def test_c5_buy_待收货状态写入待收货记录(monkeypatch):
     monkeypatch.setattr(steps.time, "time", lambda: 0)
+    monkeypatch.setattr(steps, "get_purchases", lambda: [])
     records = []
     client = _C5Client([{"status": 3, "statusName": "待收货"}])
 
     paid = c5_buy_and_record(
         client,
-        {"name": "Test Item", "min_price": 10.0},
+        {"name": "Test Item", "min_price": 10.0, "daily_volume": 100},
         {"c5": {"order_timeout_seconds": 1, "order_poll_interval_seconds": 1}},
         100,
         0,
@@ -276,3 +306,32 @@ def test_c5_buy_待收货状态写入待收货记录(monkeypatch):
     assert records[0]["platform"] == "c5"
     assert records[0]["order_id"] == "order-asset-1"
     assert client.detail_order_ids == ["order-asset-1"]
+
+
+def test_c5_buy_同名持有达到安全上限时跳过(monkeypatch):
+    monkeypatch.setattr(steps.time, "time", lambda: 0)
+    monkeypatch.setattr(
+        steps,
+        "get_purchases",
+        lambda: [{"name": "Test Item"} for _ in range(5)],
+    )
+    records = []
+    logs = []
+    client = _C5Client([{"status": 3, "statusName": "待收货"}])
+
+    paid = c5_buy_and_record(
+        client,
+        {"name": "Test Item", "min_price": 10.0, "daily_volume": 100},
+        {"c5": {"order_timeout_seconds": 1, "order_poll_interval_seconds": 1}},
+        100,
+        0,
+        lambda: False,
+        records.append,
+        log_fn=lambda msg, level="info": logs.append(msg),
+        market_price=12.0,
+    )
+
+    assert paid is steps.SKIP_NO_FAILED
+    assert records == []
+    assert client.buy_calls == []
+    assert any("安全采购上限=0" in msg for msg in logs)

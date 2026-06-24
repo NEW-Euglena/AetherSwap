@@ -776,6 +776,62 @@ function bindEvents() {
     historyMultiSelectMode = !historyMultiSelectMode;
     refreshTransactions();
   });
+  const getHistorySelectedIndices = () => {
+    const checked = document.querySelectorAll("#transactions-table-purchase-history .history-checkbox:checked");
+    return Array.from(checked).map((cb) => parseInt(cb.dataset.idx, 10)).filter((n) => Number.isFinite(n));
+  };
+  el("btn-history-batch-delist")?.addEventListener("click", async () => {
+    const indices = getHistorySelectedIndices();
+    if (!indices.length) {
+      toast("请先勾选要下架的记录");
+      return;
+    }
+    if (!confirm(`确定下架所选 ${indices.length} 条出售中记录？下架后 assetid 会变更。`)) return;
+    try {
+      toast("批量下架中", "请稍候…");
+      const r = await fetchJson(API + "/purchases/delist", {
+        method: "POST",
+        body: JSON.stringify({ indices }),
+      });
+      const failed = Array.isArray(r.failed) ? r.failed.length : 0;
+      if (!r.ok && failed) {
+        toast("批量下架部分失败", `成功 ${r.delisted ?? 0} 条，失败 ${failed} 条`);
+      } else if (!r.ok) {
+        toast("批量下架失败", r.error || "");
+      } else {
+        toast("批量下架完成", `成功 ${r.delisted ?? indices.length} 条`);
+      }
+      historyMultiSelectMode = false;
+      refreshTransactions();
+      refreshStatus();
+    } catch (e) {
+      toast("批量下架失败", e.message || "");
+    }
+  });
+  el("btn-history-restore-holding")?.addEventListener("click", async () => {
+    const indices = getHistorySelectedIndices();
+    if (!indices.length) {
+      toast("请先勾选要恢复的记录");
+      return;
+    }
+    if (!confirm(`确定将所选 ${indices.length} 条记录恢复为持有中？这会清除售出价格和售出时间。`)) return;
+    try {
+      const r = await fetchJson(API + "/purchases/restore-holding", {
+        method: "POST",
+        body: JSON.stringify({ indices }),
+      });
+      if (!r.ok) {
+        const failed = Array.isArray(r.failed) ? r.failed.length : 0;
+        toast("恢复部分失败", failed ? `失败 ${failed} 条` : (r.error || ""));
+        return;
+      }
+      historyMultiSelectMode = false;
+      refreshTransactions();
+      toast("已恢复为持有中", `共 ${r.restored ?? indices.length} 条`);
+    } catch (e) {
+      toast("恢复失败", e.message || "");
+    }
+  });
   el("btn-history-batch-del")?.addEventListener("click", async () => {
     const checked = document.querySelectorAll("#transactions-table-purchase-history .history-checkbox:checked");
     const indices = Array.from(checked).map((cb) => parseInt(cb.dataset.idx, 10)).filter((n) => Number.isFinite(n));

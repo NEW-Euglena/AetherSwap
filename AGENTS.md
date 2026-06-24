@@ -99,5 +99,5 @@ Steam 库存监听 -> 识别可出售饰品 -> 计算智能上架价 -> Steam �
 - 配置页面/API：`app/routes/config.py` -> `app/config_loader.py` -> `app/config_schema.py`。
 - 库存与市场价：`app/routes/inventory.py`、`steam/inventory.py`、`steam/market_orders.py`。
 - Buff 支付状态：`buff/buyer.py`、`app/pipeline_steps.py`。
-- C5 采买：`app/services/c5_client.py`、`app/pipeline_steps.py`。
+- C5 采买（1.1 已验证路径）：`app/services/c5_client.py`、`app/pipeline_steps.py`。
 - Steam 折扣游戏：`app/routes/steam_deals.py`、`app/services/steam_deals.py`、`app/services/deal_cards.py`。
