@@ -221,7 +221,7 @@ function showReloginModal(type, opts = {}) {
     if (opts.reason === "verification_required") {
       if (title) title.textContent = "Buff 需要验证";
       if (msg) msg.textContent = opts.error
-        ? `Buff 返回：${opts.error}。请打开内置浏览器，进入 Buff 市场或任意商品页，完成刷新/人机验证后点击完成。`
+        ? `Buff 返回：${compactErrorText(opts.error, 180)}。请打开内置浏览器，进入 Buff 市场或任意商品页，完成刷新/人机验证后点击完成。`
         : "Buff 需要刷新页面状态或完成人机验证。请打开内置浏览器，进入 Buff 市场或任意商品页，完成验证后点击完成。";
     } else {
       if (title) title.textContent = "Buff 登录已过期";
@@ -232,7 +232,7 @@ function showReloginModal(type, opts = {}) {
     if (opts.reason === "need_2fa") {
       if (msg) msg.textContent = "需要二次验证（验证码），请点击下方按钮打开浏览器并完成 Steam 登录。";
     } else if (opts.error) {
-      if (msg) msg.textContent = opts.error;
+      if (msg) msg.textContent = compactErrorText(opts.error, 220);
     } else {
       if (msg) msg.textContent = "登录已过期，请按当前运行环境打开浏览器登录 Steam，或手动填写 Cookie 后继续。";
     }
@@ -661,8 +661,10 @@ function bindEvents() {
         const filled = r.filled ?? 0;
         const missing = r.missing ?? 0;
         const total = r.total ?? 0;
-        if (missing === 0) toast("紧急修复成功", `已填入 ${filled}/${total} 条，状态已更新`);
-        else toast("紧急修复完成", `填入 ${filled}/${total} 条，未填入 ${missing} 条`);
+        const changed = r.changed ?? 0;
+        if (total === 0) toast("无需紧急修复", "没有操作记录可重建");
+        else if (missing === 0) toast("紧急修复成功", `已确认 ${filled}/${total} 条，写入 ${changed} 条变更`);
+        else toast("紧急修复完成", `已确认 ${filled}/${total} 条，仍有 ${missing} 条待处理`);
       } else {
         toast("紧急修复失败", r.error || "接口未返回 error 字段");
       }

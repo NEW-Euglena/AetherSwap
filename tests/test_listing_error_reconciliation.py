@@ -81,22 +81,23 @@ def test_repair_listing_candidate_restores_listing_state():
     assert purchase["listing_status"] is None
 
 
-def test_repair_candidate_pool_excludes_sold_history():
+def test_repair_candidate_pool_includes_sold_history():
     from app.repair_error_records import _build_merged
 
-    _, candidates = _build_merged(
+    candidates = _build_merged(
         inv_items=[{"assetid": "inventory-1", "market_hash_name": "AK-47 | Redline"}],
+        sold_map={"sold-1": 1.23},
+        sold_names={"sold-1": "AK-47 | Redline"},
         listing_assetids={"listing-1"},
         listing_name_by_assetid={"listing-1": "AK-47 | Redline"},
     )
 
     sources = [c["source"] for c in candidates["AK-47 | Redline"]]
-    assert sources == ["listing", "inventory"]
-    assert "sold" not in sources
+    assert sources == ["sold", "listing", "inventory"]
 
 
 def test_repair_skips_existing_sold_records():
-    from app.repair_error_records import _clear_repair_targets, _refill_from_list
+    from app.repair_error_records import _rebuild_records
 
     purchases = [{
         "name": "AK-47 | Redline",
@@ -106,22 +107,23 @@ def test_repair_skips_existing_sold_records():
         "listing": False,
     }]
 
-    cleared = _clear_repair_targets(purchases)
-    filled = _refill_from_list(
+    filled, missing, total, preserved_sold, changed = _rebuild_records(
         purchases,
         {"AK-47 | Redline": [{"assetid": "inventory-asset", "source": "inventory", "sale_price": None}]},
         sold_at=200.0,
     )
 
-    assert cleared == 0
     assert filled == 0
+    assert missing == 0
+    assert total == 1
+    assert preserved_sold == 1
     assert purchases[0]["assetid"] == "sold-asset"
     assert purchases[0]["sale_price"] == 1.23
     assert purchases[0]["sold_at"] == 100.0
 
 
 def test_repair_skips_pending_receipt_records():
-    from app.repair_error_records import _clear_repair_targets, _refill_from_list
+    from app.repair_error_records import _rebuild_records
 
     purchases = [{
         "name": "AK-47 | Redline",
@@ -131,15 +133,16 @@ def test_repair_skips_pending_receipt_records():
         "sold_at": None,
     }]
 
-    cleared = _clear_repair_targets(purchases)
-    filled = _refill_from_list(
+    filled, missing, total, preserved_sold, changed = _rebuild_records(
         purchases,
         {"AK-47 | Redline": [{"assetid": "inventory-asset", "source": "inventory", "sale_price": None}]},
         sold_at=200.0,
     )
 
-    assert cleared == 0
     assert filled == 0
+    assert missing == 1
+    assert total == 1
+    assert preserved_sold == 0
     assert purchases[0]["assetid"] is None
     assert purchases[0]["pending_receipt"] is True
 

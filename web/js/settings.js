@@ -1,5 +1,5 @@
 
-let inventoryRefreshSeconds = 60;
+let inventoryRefreshSeconds = 600;
 let inventoryTimer = null;
 let currentPriceRefreshMinutes = 10;
 let currentPriceTimer = null;
@@ -133,7 +133,7 @@ async function loadConfig() {
   if (gEndTimeHour) gEndTimeHour.value = p.end_time_hour ?? "";
   const invInput = el("cfg-inv-refresh");
   if (invInput) invInput.value = inv.refresh_seconds ?? "";
-  inventoryRefreshSeconds = parseInt(inv.refresh_seconds, 10) || inventoryRefreshSeconds || 60;
+  inventoryRefreshSeconds = parseInt(inv.refresh_seconds, 10) || inventoryRefreshSeconds || 600;
   const n = c.notify || {};
   const gPush = el("cfg-pushplus_token");
   if (gPush) gPush.value = n.pushplus_token ?? "";
@@ -596,7 +596,7 @@ function _showWizard(startAtBuffStep = false) {
             if (statusEl) statusEl.textContent = "✅ Buff Cookie 已手动保存！";
             setTimeout(() => goToStep(currentStep + 1), 800);
           } else {
-            if (statusEl) statusEl.textContent = "❌ 打开失败：" + (r.error || "请检查运行环境");
+            if (statusEl) statusEl.textContent = "❌ 打开失败：" + compactLoginError(r.error || "请检查运行环境");
             buffOpenBtn.disabled = false;
           }
         }
@@ -606,7 +606,7 @@ function _showWizard(startAtBuffStep = false) {
           if (statusEl) statusEl.textContent = "✅ Buff Cookie 已手动保存！";
           setTimeout(() => goToStep(currentStep + 1), 800);
         } else {
-          if (statusEl) statusEl.textContent = "❌ 请求失败：" + (e.message || "");
+          if (statusEl) statusEl.textContent = "❌ 请求失败：" + compactLoginError(e.message || "");
           buffOpenBtn.disabled = false;
         }
       }
