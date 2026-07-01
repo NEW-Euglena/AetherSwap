@@ -16,6 +16,7 @@ config/transactions.json.bak
 
 # 日志
 log/
+/*.log
 
 # Python
 __pycache__/
