@@ -23,9 +23,7 @@ async function loadConfig() {
   const d = await fetchJson(API + "/config");
   const c = d.config || {};
   const i = c.iflow || {};
-  const m = c.market || {};
   const b = c.buff || {};
-  const c5 = c.c5 || {};
   const p = c.pipeline || {};
   const s = c.stability || {};
   const inv = c.inventory || {};
@@ -34,8 +32,6 @@ async function loadConfig() {
   if (gGames) gGames.value = i.type || i.games || "";
   const gPlatforms = el("cfg-platforms");
   if (gPlatforms) gPlatforms.value = i.platforms || "";
-  const gMarketPlatform = el("cfg-market-platform");
-  if (gMarketPlatform) gMarketPlatform.value = (m.platform || "buff").toLowerCase();
   const gSort = el("cfg-sort_by");
   if (gSort) gSort.value = i.sort_by || "";
   const gMinPrice = el("cfg-min_price");
@@ -46,16 +42,6 @@ async function loadConfig() {
   if (gMinVolume) gMinVolume.value = i.min_volume ?? "";
   const gPay = el("cfg-pay_method");
   if (gPay) gPay.value = (b.pay_method || "wechat").toLowerCase();
-  const gC5AppKey = el("cfg-c5-app-key");
-  if (gC5AppKey) gC5AppKey.value = c5.app_key ?? "";
-  const gC5AppSecret = el("cfg-c5-app-secret");
-  if (gC5AppSecret) gC5AppSecret.value = c5.app_secret ?? "";
-  const gC5TradeUrl = el("cfg-c5-trade-url");
-  if (gC5TradeUrl) gC5TradeUrl.value = c5.trade_url ?? "";
-  const gC5Delivery = el("cfg-c5-delivery");
-  if (gC5Delivery) gC5Delivery.value = String(c5.delivery ?? 1);
-  const gC5Tolerance = el("cfg-c5-price-tolerance");
-  if (gC5Tolerance) gC5Tolerance.value = c5.price_tolerance ?? "";
   const gTarget = el("cfg-target_balance");
   if (gTarget) gTarget.value = p.target_balance ?? "";
   const gMaxDisc = el("cfg-max_discount");
@@ -193,14 +179,10 @@ async function loadConfig() {
 }
 
 function formToConfig() {
-  const marketPlatform = el("cfg-market-platform") ? el("cfg-market-platform").value : "buff";
   return compactConfig({
-    market: {
-      platform: marketPlatform,
-    },
     iflow: {
       type: el("cfg-games") ? el("cfg-games").value.trim() : undefined,
-      platforms: marketPlatform === "c5" ? "c5" : (el("cfg-platforms") ? el("cfg-platforms").value.trim() : undefined),
+      platforms: el("cfg-platforms") ? el("cfg-platforms").value.trim() : undefined,
       sort_by: el("cfg-sort_by") ? el("cfg-sort_by").value.trim() : undefined,
       min_price: optionalFloat("cfg-min_price"),
       max_price: optionalFloat("cfg-max_price"),
@@ -210,13 +192,6 @@ function formToConfig() {
       pay_method: el("cfg-pay_method") ? el("cfg-pay_method").value : undefined,
       game: el("cfg-buff-game") ? el("cfg-buff-game").value.trim() : undefined,
       price_tolerance: optionalFloat("cfg-price_tolerance"),
-    },
-    c5: {
-      app_key: el("cfg-c5-app-key") ? el("cfg-c5-app-key").value.trim() : undefined,
-      app_secret: el("cfg-c5-app-secret") ? el("cfg-c5-app-secret").value.trim() : undefined,
-      trade_url: el("cfg-c5-trade-url") ? el("cfg-c5-trade-url").value.trim() : undefined,
-      delivery: optionalInt("cfg-c5-delivery"),
-      price_tolerance: optionalFloat("cfg-c5-price-tolerance"),
     },
     pipeline: {
       target_balance: optionalFloat("cfg-target_balance"),

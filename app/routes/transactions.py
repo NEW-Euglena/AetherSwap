@@ -42,10 +42,6 @@ class TransactionUpdateBody(BaseModel):
     pending_receipt: Optional[bool] = None
     assetid: Optional[str] = None
     listing: Optional[bool] = None
-    platform: Optional[str] = None
-    order_id: Optional[str] = None
-    product_id: Optional[str] = None
-    out_trade_no: Optional[str] = None
 class RestoreHoldingBody(BaseModel):
     indices: List[int] = []
     db_ids: List[int] = []
@@ -141,9 +137,6 @@ def api_transactions(enrich_current_price: bool = False):
             row["listing"] = bool(p.get("listing"))
         if p.get("listing_status") is not None:
             row["listing_status"] = p.get("listing_status")
-        for key in ("platform", "order_id", "product_id", "out_trade_no"):
-            if p.get(key) is not None:
-                row[key] = p.get(key)
         out.append(row)
     for i, s in enumerate(sales):
         row = {"type": "sale", "idx": i, "name": s.get("name", ""), "goods_id": s.get("goods_id", ""), "price": float(s.get("price", 0)), "at": s.get("at", 0), "assetid": s.get("assetid") or ""}
@@ -196,14 +189,6 @@ def api_update_transaction(body: TransactionUpdateBody):
         data["listing"] = bool(body.listing)
         if not body.listing:
             data["listing_status"] = None
-    if body.platform is not None:
-        data["platform"] = body.platform or None
-    if body.order_id is not None:
-        data["order_id"] = body.order_id or None
-    if body.product_id is not None:
-        data["product_id"] = body.product_id or None
-    if body.out_trade_no is not None:
-        data["out_trade_no"] = body.out_trade_no or None
     ok = False
     if body.type == "purchase":
         ok = update_purchase_by_id(body.db_id, data) if body.db_id else update_purchase(body.idx, data)

@@ -1,9 +1,6 @@
 import copy
 from typing import Any, Optional
 DEFAULTS = {
-    "market": {
-        "platform": "buff",
-    },
     "iflow": {
         "page_num": 1,
         "page_size": 200,
@@ -21,18 +18,6 @@ DEFAULTS = {
         "pay_method": "alipay",
         "game": "csgo",
         "price_tolerance": 0.5,
-    },
-    "c5": {
-        "app_key": "",
-        "app_secret": "",
-        "trade_url": "",
-        "game": "csgo",
-        "app_id": 730,
-        "price_tolerance": 0.5,
-        "delivery": 1,
-        "buy_mode": "normal",
-        "order_poll_interval_seconds": 15,
-        "order_timeout_seconds": 300,
     },
     "stability": {
         "days": 30,
@@ -162,16 +147,7 @@ def _validate_ranges(cfg: dict) -> dict:
     pipe = cfg.get("pipeline") or {}
     stab = cfg.get("stability") or {}
     buff = cfg.get("buff") or {}
-    market = cfg.get("market") or {}
-    c5 = cfg.get("c5") or {}
     inv = cfg.get("inventory") or {}
-
-    platform = str(market.get("platform") or "buff").strip().lower()
-    if platform not in {"buff", "c5"}:
-        warnings.warn(f"[config] market.platform={platform} 不支持，已修正为 buff")
-        market["platform"] = "buff"
-    else:
-        market["platform"] = platform
 
     if isinstance(pipe.get("max_discount"), (int, float)):
         v = pipe["max_discount"]
@@ -208,22 +184,6 @@ def _validate_ranges(cfg: dict) -> dict:
         if v < 0:
             warnings.warn(f"[config] buff.price_tolerance={v} 不能为负数，已修正为0")
             buff["price_tolerance"] = 0.0
-
-    if isinstance(c5.get("price_tolerance"), (int, float)):
-        v = c5["price_tolerance"]
-        if v < 0:
-            warnings.warn(f"[config] c5.price_tolerance={v} 不能为负数，已修正为0")
-            c5["price_tolerance"] = 0.0
-
-    if isinstance(c5.get("delivery"), int) and c5["delivery"] not in (0, 1, 2):
-        warnings.warn(f"[config] c5.delivery={c5['delivery']} 超出范围，已修正为1")
-        c5["delivery"] = 1
-
-    if isinstance(c5.get("order_poll_interval_seconds"), int) and c5["order_poll_interval_seconds"] < 3:
-        c5["order_poll_interval_seconds"] = 3
-
-    if isinstance(c5.get("order_timeout_seconds"), int) and c5["order_timeout_seconds"] < 30:
-        c5["order_timeout_seconds"] = 30
 
     if isinstance(inv.get("refresh_seconds"), (int, float)):
         v = inv["refresh_seconds"]

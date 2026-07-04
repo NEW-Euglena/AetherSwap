@@ -525,7 +525,6 @@ python -m uvicorn app.api:app --host 0.0.0.0 --port 28472
 > 以下为计划中的功能，欢迎通过 Issue 或 PR 参与建设！
 
 - [ ] **更多交易平台接入**
-  - [x] C5Game 平台对接（C5 1.1 已验证）
   - [ ] IGXE 平台对接
   - [ ] 悠悠有品平台对接
 - [ ] **更多支付方式**
@@ -542,7 +541,7 @@ python -m uvicorn app.api:app --host 0.0.0.0 --port 28472
 - **后端栈**：`Python 3.10+` · `FastAPI` · `SQLModel (SQLite)` · `Playwright`
 - **前端栈**：原生 `HTML / JS / CSS`（无框架依赖）
 - **并发机制**：异步 + 多线程融合的后台 Task Queue（`app/services/workers`）
-- **扩展性**：高内聚、低耦合的模块化设计，接入 C5、IGXE 等其他平台仅需添加对应 API 封装层
+- **扩展性**：高内聚、低耦合的模块化设计，接入 IGXE 等其他平台仅需添加对应 API 封装层
 
 ---
 

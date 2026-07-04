@@ -30,7 +30,6 @@ def parse_response(result: dict, target_platform: str = "BUFF") -> List[SteamDTR
             platform_link = ""
             platform_sell_rate = None
             platform_purchase_rate = None
-        platform_name = target_platform if platform else ""
 
         steam_link = steam.get("linkUrl", "") if steam else ""
 
@@ -52,7 +51,6 @@ def parse_response(result: dict, target_platform: str = "BUFF") -> List[SteamDTR
             safe_buy_ratio=str(purchase_rate or sell_rate or 0), 
             recent_ratio=str(sell_rate or 0),      
             platform=platform_link,
-            platform_name=platform_name,
             steam_link=steam_link,
             update_time=str(item.get("updateTime", "")),
             name_cn=item.get("name", ""),

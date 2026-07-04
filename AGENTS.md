@@ -9,7 +9,7 @@ AetherSwap 是一个本地运行的 Steam 饰品低价余额助手和 Web 控制
 核心能力包括：
 
 - Steam 饰品低价余额流程：选品、采买、入库、上架、确认、交易记录沉淀。
-- Buff/C5 采买对接，SteamDT/iflow 行情拉取与筛选。
+- Buff 采买对接，SteamDT/iflow 行情拉取与筛选。
 - Steam 库存、市场挂单、出售价格、币种换算、Steam Guard 确认。
 - 交易记录、持仓分析、盈亏统计、日志查看、代理池管理。
 - Steam 折扣游戏抓取、排序和折扣分享卡生成。
@@ -42,7 +42,7 @@ pytest tests/test_sell_pipeline_currency_guard.py -v
 - `app/api.py`：FastAPI 应用入口，初始化数据库、迁移旧 JSON 数据、启动后台 worker、注册路由。
 - `app/routes/`：API 路由层，包含状态、交易、pipeline、库存、认证、账号、配置、代理、Steam 折扣、静态文件等路由。
 - `app/pipeline.py`、`app/pipeline_steps.py`、`app/sell_pipeline.py`：采买、支付确认、待收货记录、出售上架、自动确认等主流程。
-- `app/services/`：后台任务、任务队列，以及 Buff、C5、Steam、Steam 折扣、分享卡等服务封装。
+- `app/services/`：后台任务、任务队列，以及 Buff、Steam、Steam 折扣、分享卡等服务封装。
 - `app/database.py`：SQLModel/SQLite 数据模型和交易、Steam 折扣游戏、item_nameid 等数据库操作。
 - `app/config_schema.py`、`app/config_loader.py`、`config/__init__.py`：配置默认值、校验、缓存和本地 JSON 读写。
 - `app/state.py`：运行态状态、日志、支付确认、库存快照和停止信号。
@@ -56,7 +56,7 @@ pytest tests/test_sell_pipeline_currency_guard.py -v
 采买流程大致为：
 
 ```text
-SteamDT/iflow 行情 -> 折扣与关键词过滤 -> 稳定性分析 -> 平台价格校验 -> Buff/C5 下单 -> 支付/收货状态处理 -> 写入采购记录
+SteamDT/iflow 行情 -> 折扣与关键词过滤 -> 稳定性分析 -> 平台价格校验 -> Buff 下单 -> 支付/收货状态处理 -> 写入采购记录
 ```
 
 出售流程大致为：
@@ -99,5 +99,4 @@ Steam 库存监听 -> 识别可出售饰品 -> 计算智能上架价 -> Steam �
 - 配置页面/API：`app/routes/config.py` -> `app/config_loader.py` -> `app/config_schema.py`。
 - 库存与市场价：`app/routes/inventory.py`、`steam/inventory.py`、`steam/market_orders.py`。
 - Buff 支付状态：`buff/buyer.py`、`app/pipeline_steps.py`。
-- C5 采买（1.1 已验证路径）：`app/services/c5_client.py`、`app/pipeline_steps.py`。
 - Steam 折扣游戏：`app/routes/steam_deals.py`、`app/services/steam_deals.py`、`app/services/deal_cards.py`。

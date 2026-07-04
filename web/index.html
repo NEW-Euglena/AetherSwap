@@ -797,13 +797,6 @@
                 <input id="cfg-platforms" placeholder="e.g. BUFF" />
               </div>
               <div class="field">
-                <label for="cfg-market-platform">采购平台</label>
-                <select id="cfg-market-platform">
-                  <option value="buff">BUFF</option>
-                  <option value="c5">C5</option>
-                </select>
-              </div>
-              <div class="field">
                 <label for="cfg-sort_by">排序策略</label>
                 <select id="cfg-sort_by">
                   <option value="sell">最优寄售</option>
@@ -865,38 +858,6 @@
               <div class="field">
                 <label>关键词排除 (每行一个)</label>
                 <textarea id="cfg-exclude_keywords" rows="4"></textarea>
-              </div>
-            </div>
-          </div>
-
-          <div class="settings-group">
-            <h2>C5 交易策略</h2>
-            <div class="form-grid">
-              <div class="field">
-                <label for="cfg-c5-app-key">app_key</label>
-                <input type="password" id="cfg-c5-app-key" autocomplete="off" />
-              </div>
-              <div class="field">
-                <label for="cfg-c5-app-secret">app_secret</label>
-                <input type="password" id="cfg-c5-app-secret" autocomplete="off" />
-              </div>
-              <div class="field">
-                <label for="cfg-c5-trade-url">Steam 交易链接</label>
-                <input id="cfg-c5-trade-url" autocomplete="off" />
-              </div>
-              <div class="field-row">
-                <div class="field">
-                  <label for="cfg-c5-delivery">发货方式</label>
-                  <select id="cfg-c5-delivery">
-                    <option value="1">自动发货</option>
-                    <option value="0">不限</option>
-                    <option value="2">人工发货</option>
-                  </select>
-                </div>
-                <div class="field">
-                  <label for="cfg-c5-price-tolerance">价格容忍</label>
-                  <input type="number" id="cfg-c5-price-tolerance" step="0.01" min="0" />
-                </div>
               </div>
             </div>
           </div>

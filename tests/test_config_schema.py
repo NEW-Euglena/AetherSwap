@@ -1,4 +1,4 @@
-import sys
+﻿import sys
 import warnings
 from pathlib import Path
 
@@ -117,21 +117,6 @@ def test_range_price_tolerance负数被限制():
         result = _validate_ranges(cfg)
     assert result["buff"]["price_tolerance"] >= 0.0
 
-
-def test_range_market_platform非法值被修正():
-    cfg = merge(DEFAULTS, {"market": {"platform": "unknown"}})
-    with warnings.catch_warnings(record=True):
-        warnings.simplefilter("always")
-        result = _validate_ranges(cfg)
-    assert result["market"]["platform"] == "buff"
-
-
-def test_range_c5_price_tolerance负数被限制():
-    cfg = merge(DEFAULTS, {"c5": {"price_tolerance": -1.0}})
-    with warnings.catch_warnings(record=True):
-        warnings.simplefilter("always")
-        result = _validate_ranges(cfg)
-    assert result["c5"]["price_tolerance"] >= 0.0
 
 
 def test_range_inventory_refresh_seconds_too_short_is_lifted_to_ten_minutes():

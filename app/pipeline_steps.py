@@ -1,4 +1,4 @@
-import re
+﻿import re
 import statistics
 import threading
 import time
@@ -11,7 +11,6 @@ from app.strategy_engine import evaluate_strategy_runtime_modules, is_strategy_m
 from app.services.steam_client import SteamClient
 from app.services.analysis_client import StabilityAnalyzer
 from app.services.buff_client import count_lowest_price_orders, first_order_at_price
-from app.services.c5_client import C5ApiError
 from app.notify import send_pushplus, build_payment_notify_content, wait_email_command
 from app.purchase_limit import calculate_safe_purchase_limit
 from utils.delay import jittered_sleep
@@ -120,40 +119,6 @@ def _check_buff_price(
     return True, lowest_price
 
 
-def _check_c5_price(
-    item,
-    plan_price,
-    c5_client,
-    config: dict,
-    log_fn,
-):
-    c5_cfg = config.get("c5", {})
-    app_id = int(c5_cfg.get("app_id", 730) or 730)
-    delivery = int(c5_cfg.get("delivery", 1) or 1)
-    tolerance = float(c5_cfg.get("price_tolerance", 0.5))
-    market_hash_name = (item.get("steam_market_name") or item.get("name") or "").strip()
-    try:
-        orders = c5_client.get_sell_orders(market_hash_name, app_id=app_id, delivery=delivery)
-    except C5ApiError as e:
-        if log_fn:
-            log_fn(f"[C5]   → 预检未通过: 无法获取 C5 卖单信息：{e}", "warn")
-        return False, None
-    if not orders:
-        if log_fn:
-            log_fn(f"[C5]   → 预检未通过: C5 当前无在售卖单 ({market_hash_name})", "warn")
-        return False, None
-    lowest_price, _ = count_lowest_price_orders(orders)
-    if lowest_price <= 0:
-        if log_fn:
-            log_fn(f"[C5]   → 预检未通过: C5 最低价无效 ({market_hash_name})", "warn")
-        return False, None
-    if plan_price is not None and lowest_price - plan_price > tolerance:
-        if log_fn:
-            log_fn(f"[C5]   → 预检未通过: C5 最低价 {lowest_price:.2f} 较 SteamDT 参考价 {plan_price:.2f} 超出容忍 (差{lowest_price - plan_price:.2f})", "warn")
-        return False, None
-    item["_c5_lowest_price"] = lowest_price
-    item["_c5_sell_orders"] = orders
-    return True, lowest_price
 
 def _adjust_ref_price_for_daily_high(
     market_hash_name: str,
@@ -284,8 +249,6 @@ def _goods_id_from_buff_url(url: str) -> int:
     return int(m.group(1)) if m else 0
 
 
-def _market_platform(config: dict) -> str:
-    return str((config.get("market") or {}).get("platform") or "buff").strip().lower()
 
 
 _RATIO_ATTR = {"sell": "sell_ratio", "buy": "buy_ratio"}
@@ -328,12 +291,11 @@ def filter_iflow_rows(
         rows = rows[:top_n]
     sort_by = (iflow_cfg.get("sort_by") or "sell").strip()
     ratio_attr = _RATIO_ATTR.get(sort_by, "sell_ratio")
-    market_platform = _market_platform(config)
     steam_client = SteamClient()
     filtered = []
     skipped_keyword = 0
     skipped_price = 0
-    skipped_no_platform = 0
+    skipped_no_buff = 0
     for r in rows:
         name = (getattr(r, "name", None) or "").lower()
         name_cn = (getattr(r, "name_cn", None) or "").lower()
@@ -352,19 +314,9 @@ def filter_iflow_rows(
             ratio_val = float(getattr(r, ratio_attr, 0) or 0)
         except (ValueError, TypeError):
             ratio_val = 0
-        platform_url = getattr(r, "platform", "") or ""
-        platform_name = (getattr(r, "platform_name", "") or "").strip().lower()
-        gid = _goods_id_from_buff_url(platform_url)
-        if market_platform == "buff":
-            if gid <= 0:
-                skipped_no_platform += 1
-                continue
-        elif market_platform == "c5":
-            if platform_name != "c5":
-                skipped_no_platform += 1
-                continue
-        else:
-            skipped_no_platform += 1
+        gid = _goods_id_from_buff_url(getattr(r, "platform", "") or "")
+        if gid <= 0:
+            skipped_no_buff += 1
             continue
         steam_link = getattr(r, "steam_link", None) or ""
         steam_market_name = steam_client.market_hash_name_from_listing_url(
@@ -378,9 +330,7 @@ def filter_iflow_rows(
             "name": getattr(r, "name", ""),
             "min_price": price,
             "goods_id": gid,
-            "platform_key": market_platform,
             "platform": getattr(r, "platform", ""),
-            "platform_name": getattr(r, "platform_name", ""),
             "steam_market_name": steam_market_name,
             "steam_link": steam_link,
             "ratio": ratio_val,
@@ -390,7 +340,7 @@ def filter_iflow_rows(
         parts = [f"排除关键词={skipped_keyword}", f"价格无效={skipped_price}"]
         if top_n > 0:
             parts.append(f"取前{top_n}条")
-        parts.extend([f"非目标平台={skipped_no_platform}", f"→ 通过 {len(filtered)} 条"])
+        parts.extend([f"非Buff链接={skipped_no_buff}", f"→ 通过 {len(filtered)} 条"])
         log_fn(f"[筛选] {' '.join(parts)}", "info")
     return filtered
 
@@ -425,7 +375,6 @@ def _check_max_discount_precheck(
     plan_price,
     max_discount,
     log_fn,
-    platform_label="Buff",
 ) -> bool:
     # 检查买入价占Steam参考价的比例是否低于max_discount，超了就不够利润
     if max_discount is not None:
@@ -438,11 +387,11 @@ def _check_max_discount_precheck(
             if log_fn:
                 plan_str = f"{plan_price:.2f}" if isinstance(plan_price, (int, float)) else "无效"
                 ref_str = f"{ref_price_est:.2f}" if isinstance(ref_price_est, (int, float)) else "无效"
-                log_fn(f"[稳定性]   → 预检未通过: 无法计算预估比例 ({platform_label}最低价={plan_str}, Steam参考价={ref_str})", "warn")
+                log_fn(f"[稳定性]   → 预检未通过: 无法计算预估比例 (Buff最低价={plan_str}, Steam参考价={ref_str})", "warn")
             return False
         if est_ratio >= max_discount_float:
             if log_fn:
-                log_fn(f"[稳定性]   → 预检未通过: ({platform_label}最低价/Steam参考价)×1.15={est_ratio:.4f} 需<{max_discount_float} (Steam参考价={ref_price_est:.2f})", "warn")
+                log_fn(f"[稳定性]   → 预检未通过: (Buff最低价/Steam参考价)×1.15={est_ratio:.4f} 需<{max_discount_float} (Steam参考价={ref_price_est:.2f})", "warn")
             return False
     return True
 
@@ -539,7 +488,6 @@ def pick_stable_item(
     log_fn: Optional[Callable[[str, str], None]] = None,
     exclude_goods_ids: Optional[set] = None,
     buff_client: Optional[Any] = None,
-    c5_client: Optional[Any] = None,
 ) -> Tuple[Optional[Dict[str, Any]], Set[int]]:
     # 遍历候选饰品，返回第一个通过所有检测的
     # 检测顺序: Buff价格预检 → Steam卖单 → 卖压 → 最高折扣 → 历史稳定性
@@ -549,7 +497,6 @@ def pick_stable_item(
     r2_threshold = float(stability_cfg.get("r2_threshold", 0.6))
     min_daily_trades = float(stability_cfg.get("min_daily_trades", 5))
     excluded = exclude_goods_ids or set()
-    market_platform = _market_platform(config)
     stability_failed: Set[int] = set()
     n = len(filtered)
     request_interval = float(stability_cfg.get("request_interval_seconds", 2.5))
@@ -570,7 +517,7 @@ def pick_stable_item(
         if is_stop_requested():
             return None, stability_failed
         gid = item.get("goods_id")
-        item_key = item.get("goods_id") if market_platform == "buff" else (item.get("steam_market_name") or item.get("name"))
+        item_key = item.get("goods_id")
 
         def mark_failed() -> None:
             if item_key:
@@ -590,9 +537,8 @@ def pick_stable_item(
         pipeline_cfg = config.get("pipeline", {})
         verbose_detail = bool(pipeline_cfg.get("verbose_debug", False))
         if item_log and verbose_detail:
-            item_log(f"[稳定性] 开始预检 ({i+1}/{n}) {market_platform.upper()}参考价={item.get('min_price')} 比例={item.get('ratio')}", "debug")
+            item_log(f"[稳定性] 开始预检 ({i+1}/{n}) Buff参考价={item.get('min_price')} 比例={item.get('ratio')}", "debug")
         max_discount = pipeline_cfg.get("max_discount") if is_strategy_module_enabled(config, "buy", "guard.max_discount") else None
-        platform_label = "C5" if market_platform == "c5" else "Buff"
         sell_pressure_threshold = _parse_threshold(pipeline_cfg.get("sell_pressure_threshold")) if is_strategy_module_enabled(config, "buy", "guard.sell_pressure") else None
         steam_depth_enabled = is_strategy_module_enabled(config, "buy", "buy.steam_sell_depth")
         need_steam = (
@@ -611,7 +557,7 @@ def pick_stable_item(
             plan_price = item.get("min_price")
 
             # 1. 目标平台价格预检
-            if market_platform == "buff" and buff_client and is_strategy_module_enabled(config, "buy", "buy.buff_realtime_price"):
+            if buff_client and is_strategy_module_enabled(config, "buy", "buy.buff_realtime_price"):
                 if item_log and verbose_detail:
                     item_log("[稳定性] 检查 Buff 实时卖单…", "debug")
                 buff_ok, plan_price = _check_buff_price(
@@ -620,16 +566,6 @@ def pick_stable_item(
                 if not buff_ok:
                     mark_failed()
                     continue
-            elif market_platform == "c5" and c5_client:
-                if item_log and verbose_detail:
-                    item_log("[稳定性] 检查 C5 实时卖单…", "debug")
-                c5_ok, plan_price = _check_c5_price(
-                    item, plan_price, c5_client, config, item_log
-                )
-                if not c5_ok:
-                    mark_failed()
-                    continue
-
             # 2. 拉取 Steam 挂单数据
             if item_log and verbose_detail:
                 item_log("[稳定性] 拉取 Steam 卖单深度…", "debug")
@@ -668,7 +604,7 @@ def pick_stable_item(
 
             # 5. 最高折扣检测
             if not _check_max_discount_precheck(
-                item, gid, smart_price, est_ratio, ref_price_est, plan_price, max_discount, item_log, platform_label
+                item, gid, smart_price, est_ratio, ref_price_est, plan_price, max_discount, item_log
             ):
                 mark_failed()
                 if failure_delay > 0:
@@ -1065,176 +1001,6 @@ def _do_wait_payment_and_append(
             log_fn("[Buff]   → 提醒卖家发货请求异常，可稍后在订单页手动催发货", "warn")
     return unit_price * num
 
-
-def c5_buy_and_record(
-    c5_client: Any,
-    item: Dict[str, Any],
-    config: dict,
-    target_balance: float,
-    acc: float,
-    is_stop_requested: callable,
-    append_purchase: callable,
-    log_fn: Optional[Callable[[str, str], None]] = None,
-    market_price: Optional[float] = None,
-    on_entering_payment: Optional[Callable[[], None]] = None,
-) -> Optional[float]:
-    c5_cfg = config.get("c5", {})
-    app_id = int(c5_cfg.get("app_id", 730) or 730)
-    delivery = int(c5_cfg.get("delivery", 1) or 1)
-    tolerance = float(c5_cfg.get("price_tolerance", 0.5))
-    market_hash_name = (item.get("steam_market_name") or item.get("name") or "").strip()
-    plan_price = item.get("_c5_lowest_price") or item.get("min_price")
-    orders = item.get("_c5_sell_orders")
-    if not orders:
-        try:
-            orders = c5_client.get_sell_orders(market_hash_name, app_id=app_id, delivery=delivery)
-        except C5ApiError as e:
-            if log_fn:
-                log_fn(f"[C5]   → 拉取在售失败: {e}", "warn")
-            return None
-        if log_fn:
-            log_fn(f"[C5] 拉取在售 {market_hash_name} app_id={app_id} → {len(orders or [])} 条", "info")
-    else:
-        if log_fn:
-            log_fn(f"[C5]   → 复用预检阶段缓存的 C5 卖单数据 → {len(orders)} 条", "info")
-    if not orders:
-        if log_fn:
-            log_fn("[C5]   → 当前无在售卖单，跳过本件", "warn")
-        return None
-    lowest_price, count_at_lowest = count_lowest_price_orders(orders)
-    if log_fn:
-        log_fn(f"[C5]   → 最低价={lowest_price:.2f} 同价数量={count_at_lowest} 参考价={plan_price} 容忍={tolerance} 累计={acc:.2f} 目标={target_balance}", "info")
-    if acc + lowest_price > target_balance:
-        if log_fn:
-            log_fn(f"[C5]   → 累计+本件={acc + lowest_price:.2f} 已达/超过目标，不再购买", "info")
-        return TARGET_REACHED
-    if plan_price is not None and lowest_price - plan_price > tolerance:
-        if log_fn:
-            log_fn(f"[C5]   → 当前价较参考价超出容忍 (差{lowest_price - plan_price:.2f})，跳过", "warn")
-        return None
-
-    scfg = config.get("pipeline", {})
-    safe_limit = calculate_safe_purchase_limit(
-        item_price=lowest_price,
-        daily_volume=int(item.get("daily_volume", 0) or 0),
-        hard_qty_cap=int(scfg.get("safe_purchase_hard_qty_cap", 50)),
-        liquidity_ratio=float(scfg.get("safe_purchase_liquidity_ratio", 0.05)),
-        low_price_threshold=float(scfg.get("safe_purchase_low_price_threshold", 5.0)),
-        low_price_penalty=float(scfg.get("safe_purchase_low_price_penalty", 0.5)),
-        low_price_hard_cap=int(scfg.get("safe_purchase_low_price_hard_cap", 30)),
-    )
-    if market_hash_name:
-        purchases_snapshot = get_purchases()
-        holdings = [p for p in purchases_snapshot if not (p.get("sale_price") and float(p.get("sale_price", 0) or 0) > 0)]
-        held_same = sum(1 for p in holdings if (p.get("name") or "").strip() == market_hash_name)
-        safe_limit = max(0, safe_limit - held_same)
-        if log_fn and held_same > 0:
-            log_fn(f"[C5]   → 已持有同名(英文) {held_same} 件，安全上限 {safe_limit + held_same} → {safe_limit}", "info")
-    if safe_limit <= 0:
-        if log_fn:
-            log_fn("[C5]   → 安全采购上限=0（流动性不足或低价惩罚），跳过本件", "warn")
-        return SKIP_NO_FAILED
-
-    if market_price is None:
-        steam_sell_data = item.get("_steam_sell_data")
-        market_price = steam_sell_data.get("smart_price") if steam_sell_data else None
-        if market_price is None:
-            market_price = _fetch_smart_market_price(market_hash_name, config, app_id=730)
-
-    if on_entering_payment:
-        on_entering_payment()
-    try:
-        balance = c5_client.get_balance()
-    except C5ApiError as e:
-        if log_fn:
-            log_fn(f"[C5]   → 查询余额失败: {e}", "warn")
-        return None
-    if balance is not None and balance < lowest_price:
-        if log_fn:
-            log_fn(f"[C5]   → 余额不足 当前={balance:.2f} 需要={lowest_price:.2f}", "warn")
-        return None
-
-    order = first_order_at_price(orders, lowest_price)
-    if not order:
-        if log_fn:
-            log_fn("[C5]   → 未找到最低价订单，跳过", "warn")
-        return None
-    product_id = str(order.get("product_id") or order.get("id") or "")
-    out_trade_no = c5_client.make_out_trade_no()
-    try:
-        result = c5_client.buy_product(product_id, lowest_price, out_trade_no=out_trade_no)
-    except C5ApiError as e:
-        if log_fn:
-            log_fn(f"[C5]   → 购买失败: {e}", "warn")
-        return None
-    order_id = result.get("order_id") or ""
-    detail_order_id = result.get("order_asset_id") or order_id
-    actual_pay = float(result.get("actual_pay") or lowest_price)
-    pay_status = str(result.get("pay_status") or "")
-    if pay_status == "2":
-        if log_fn:
-            log_fn(f"[C5]   → 支付失败 order_id={order_id} detail_order_id={detail_order_id} product_id={product_id}", "warn")
-        return None
-    if log_fn:
-        log_fn(f"[C5]   → 余额扣款成功 order_id={order_id} detail_order_id={detail_order_id} product_id={product_id} 实付={actual_pay:.2f}", "info")
-
-    timeout_sec = int(c5_cfg.get("order_timeout_seconds", 300) or 300)
-    poll_interval = int(c5_cfg.get("order_poll_interval_seconds", 15) or 15)
-    start = time.time()
-    detail: Dict[str, Any] = {}
-    is_confirmed = False
-    success_statuses = {"1", "3", "10", "200"}
-    failure_statuses = {"11", "220"}
-    while detail_order_id and not is_stop_requested() and time.time() - start < timeout_sec:
-        try:
-            detail = c5_client.get_order_detail(detail_order_id, out_trade_no=out_trade_no)
-        except C5ApiError as e:
-            if log_fn:
-                log_fn(f"[C5]   → 查询订单详情失败: {e}", "debug")
-            detail = {}
-        status = detail.get("status")
-        status_name = str(detail.get("statusName") or "")
-        if log_fn:
-            log_fn(f"[C5]   → 订单状态 detail_order_id={detail_order_id} status={status} {status_name}", "debug")
-        status_key = str(status).strip()
-        if status_key in failure_statuses or "取消" in status_name or "失败" in status_name or "撤回" in status_name:
-            if log_fn:
-                log_fn(f"[C5]   → 订单已取消/失败: {status_name}", "warn")
-            return None
-        if status_key in success_statuses:
-            is_confirmed = True
-            break
-        for _ in range(max(1, poll_interval)):
-            if is_stop_requested():
-                return None
-            time.sleep(1)
-    if not is_confirmed:
-        if log_fn:
-            log_fn(f"[C5]   → 订单未进入成功状态，不写入采购记录 detail_order_id={detail_order_id}", "warn")
-        return None
-
-    saved_name = market_hash_name
-    rec = {
-        "name": saved_name,
-        "goods_id": 0,
-        "price": round(actual_pay, 2),
-        "at": time.time(),
-        "pending_receipt": True,
-        "platform": "c5",
-        "order_id": str(detail_order_id),
-        "product_id": str(product_id),
-        "out_trade_no": str(out_trade_no),
-    }
-    if market_price is not None and market_price > 0:
-        rec["market_price"] = round(float(market_price), 2)
-    new_asset_id = detail.get("newAssetId") if detail else None
-    if new_asset_id:
-        rec["assetid"] = str(new_asset_id)
-        rec["pending_receipt"] = False
-    append_purchase(rec)
-    if log_fn:
-        log_fn("[C5]   → 已写入采购记录，后续由收货/库存流程继续处理", "info")
-    return actual_pay
 
 
 def lock_and_confirm_payment(

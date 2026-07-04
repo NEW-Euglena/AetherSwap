@@ -43,7 +43,6 @@ class SteamDTRow:
     safe_buy_ratio: str = "0" 
     recent_ratio: str = "0"   
     platform: str = ""        
-    platform_name: str = ""
     steam_link: str = ""      
     update_time: str = ""     
 

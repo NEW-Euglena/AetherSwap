@@ -43,16 +43,11 @@ class IflowClient:
         # Also accept native SteamDT keys if already present
         platform_raw = p.get("platforms", p.get("platform_list", "buff"))
         if isinstance(platform_raw, str):
-            # "buff-c5" → ["BUFF", "C5"],  "buff" → ["BUFF"]
             platform_list = [s.strip().upper() for s in platform_raw.replace("-", ",").split(",") if s.strip()]
         elif isinstance(platform_raw, list):
             platform_list = [s.strip().upper() for s in platform_raw if s.strip()]
         else:
             platform_list = ["BUFF"]
-
-        cfg_platform = str(p.get("market_platform", "") or "").strip().upper()
-        if cfg_platform and cfg_platform not in platform_list:
-            platform_list = [cfg_platform] + platform_list
 
         query = SteamDTQueryParams(
             page=int(p.get("page_num", p.get("page", 1))),
@@ -69,7 +64,8 @@ class IflowClient:
             language=p.get("language", "zh_CN"),
         )
 
-        target = cfg_platform if cfg_platform in platform_list else (platform_list[0] if platform_list else "BUFF")
+        # Determine target platform for link extraction (use the first one)
+        target = platform_list[0] if platform_list else "BUFF"
 
         return fetch_steamdt_data(
             query,
@@ -100,7 +96,6 @@ def fetch_iflow_rows(config: dict) -> List[Any]:
         "page_num": iflow_cfg.get("page_num", 1),
         "page_size": int(iflow_cfg.get("page_size", 200)),
         "platforms": iflow_cfg.get("platforms", "buff"),
-        "market_platform": (config.get("market") or {}).get("platform", ""),
         "min_price": iflow_cfg.get("min_price", 2),
         "max_price": iflow_cfg.get("max_price", 5000),
         "min_volume": iflow_cfg.get("min_volume", 200),
