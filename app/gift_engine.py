@@ -6,9 +6,9 @@ import time
 import requests
 import urllib3
 from bs4 import BeautifulSoup
-from steam.session import parse_cookies
+from steam.session import STEAM_BROWSER_USER_AGENT, parse_cookies
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+_HEADERS = {"User-Agent": STEAM_BROWSER_USER_AGENT}
 def _build_cookies(cookies_raw: str) -> dict:
     """从完整 cookie 字符串构建 cookies dict，并确保必要字段存在。"""
     cookies = parse_cookies(cookies_raw)
@@ -386,7 +386,7 @@ def _build_remove_payload(line_item_id: int) -> str:
 def _grpc_request(jwt_token: str, endpoint: str, payload_b64: str) -> bool:
     url = f"https://api.steampowered.com/IAccountCartService/{endpoint}?access_token={jwt_token}"
     headers = {
-        "User-Agent": "Mozilla/5.0",
+        "User-Agent": STEAM_BROWSER_USER_AGENT,
         "Origin": "https://store.steampowered.com",
         "Referer": "https://store.steampowered.com/",
     }
@@ -425,7 +425,7 @@ def _get_cart_items(jwt_token: str) -> list:
                 f"[gift_engine] GetCart attempt={attempt} proxy={'使用: ' + proxies.get('http') if proxies else '本机'}",
                 "debug", category="proxy"
             )
-            resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0", "Origin": "https://store.steampowered.com"}, proxies=proxies, verify=False, timeout=15)
+            resp = requests.get(url, headers={"User-Agent": STEAM_BROWSER_USER_AGENT, "Origin": "https://store.steampowered.com"}, proxies=proxies, verify=False, timeout=15)
             if resp.status_code == 200:
                 data = resp.json().get("response", resp.json())
                 items = [str(item.get("line_item_id")) for item in data.get("cart", {}).get("line_items", [])]
@@ -520,7 +520,7 @@ def _do_checkout(cookies_raw: str, country_code: str, giftee_account_id: int = 0
     cookies = _build_cookies(cookies_raw)
     session_id = cookies.get("sessionid", "")
     headers = {
-        "User-Agent": "Mozilla/5.0",
+        "User-Agent": STEAM_BROWSER_USER_AGENT,
         "Origin": "https://checkout.steampowered.com",
         "Referer": "https://checkout.steampowered.com/checkout/?accountcart=1",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",

@@ -4,7 +4,7 @@ import time
 from typing import Any, Callable, Dict, Optional, Tuple
 import requests
 from config import get_steam
-from steam.session import create_market_session
+from steam.session import STEAM_BROWSER_USER_AGENT, create_market_session
 from utils.delay import jittered_sleep
 try:
     import urllib3
@@ -188,7 +188,7 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
         return False, None, "Cookie 中无 steamLoginSecure，请重新登录 Steam"
     sessionid = (c.get("sessionid") or "").strip()
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
+        "User-Agent": STEAM_BROWSER_USER_AGENT,
         "Accept": "application/json, text/javascript, */*; q=0.01",
         "X-Requested-With": "XMLHttpRequest",
         "Origin": "https://steamcommunity.com",

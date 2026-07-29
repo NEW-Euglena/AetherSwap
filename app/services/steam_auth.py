@@ -10,6 +10,7 @@ from typing import Optional, Tuple
 import urllib3
 import requests as _req
 from app.state import log
+from steam.session import STEAM_BROWSER_USER_AGENT
 from app.config_loader import (
     get_steam_credentials,
     load_app_config_validated,
@@ -40,7 +41,7 @@ def _verify_steam_cookies_valid(cookie_str: str, steam_id: str = "") -> bool:
     session.verify = False
     session.cookies.update(cookie_dict)
     session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "User-Agent": STEAM_BROWSER_USER_AGENT,
         "Accept": "application/json, text/javascript, */*; q=0.01",
     })
     try:
@@ -88,7 +89,7 @@ def fetch_steam_profile_via_api(steam_id: str, cookies_str: str) -> tuple:
             cookie_dict[k.strip()] = v.strip()
     session.cookies.update(cookie_dict)
     session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "User-Agent": STEAM_BROWSER_USER_AGENT,
     })
     try:
         r = session.get(f"https://steamcommunity.com/miniprofile/{int(steam_id) - 76561197960265728}/json", timeout=15)
@@ -247,7 +248,7 @@ def _do_steampy_login(username: str, password: str, steam_guard_dict: Optional[d
         client = SteamClient(api_key="", username=username, password=password,
                              steam_guard=sg_str)
         client._session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'User-Agent': STEAM_BROWSER_USER_AGENT,
             'Accept': 'application/json, text/plain, */*',
             'Sec-Ch-Ua-Platform': '"Windows"',
             'Origin': 'https://steamcommunity.com',

@@ -4,6 +4,7 @@ import time
 from typing import Callable, Dict, Optional, Set, Tuple
 import requests
 from bs4 import BeautifulSoup
+from steam.session import STEAM_BROWSER_USER_AGENT
 STEAM_REQUEST_TIMEOUT = 25
 STEAM_REQUEST_TIMEOUT = 25
 STEAM_REQUEST_RETRIES = 2
@@ -150,7 +151,7 @@ def fetch_my_listings(cookies, debug_fn: Optional[Callable[[str], None]] = None)
             _debug(debug_fn, "[mylistings] 无 steamLoginSecure，未登录")
             return False, set(), "未登录 Steam", {}
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
+            "User-Agent": STEAM_BROWSER_USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
         r = _get_with_retry(MYLISTINGS_HTML_URL, {"tab": "sell"}, headers, c, debug_fn)
@@ -198,7 +199,7 @@ def fetch_my_history_sold(cookies, debug_fn: Optional[Callable[[str], None]] = N
             _debug(debug_fn, "[myhistory] 无 steamLoginSecure，未登录")
             return False, {}, "未登录 Steam"
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
+            "User-Agent": STEAM_BROWSER_USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
             "Accept-Language": "zh-CN,zh;q=0.9",
             "X-Requested-With": "XMLHttpRequest",

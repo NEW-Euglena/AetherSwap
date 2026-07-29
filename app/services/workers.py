@@ -24,6 +24,7 @@ from app.config_loader import (
 from app.notify import send_pushplus, build_holdings_report_content, compute_holdings_stats
 from app.inventory_cs2 import scan_cs2_inventory
 from app.accounts import get_current_account, update_account
+from steam.session import STEAM_BROWSER_USER_AGENT
 _HOLDINGS_REPORT_LAST_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "holdings_report_last.json"
 _HOLDINGS_REPORT_WAIT_INTERVAL = 60
 _HOLDINGS_REPORT_WAIT_MAX = 30 * 60
@@ -385,7 +386,7 @@ def _detect_account_currency_from_history() -> Optional[str]:
                 k, _, v = s.partition("=")
                 cookies_dict[k.strip()] = v.strip()
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
+            "User-Agent": STEAM_BROWSER_USER_AGENT,
             "Accept": "application/json,text/plain,*/*",
             "Accept-Language": "zh-CN,zh;q=0.9",
             "X-Requested-With": "XMLHttpRequest",

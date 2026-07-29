@@ -2,8 +2,13 @@ from typing import Optional
 import requests
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+STEAM_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/145.0.0.0 Safari/537.36"
+)
 MARKET_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.5845.97 Safari/537.36",
+    "User-Agent": STEAM_BROWSER_USER_AGENT,
     "X-Requested-With": "XMLHttpRequest",
 }
 def parse_cookies(cookie_str: str) -> dict:

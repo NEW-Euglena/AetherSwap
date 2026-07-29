@@ -35,7 +35,7 @@ def save_credentials(data: dict) -> None:
     with open(_CREDENTIALS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     _cache = {}
-_STEAM_COOKIE_NAMES = ("sessionid", "steamCountry", "steamLoginSecure")
+_STEAM_COOKIE_NAMES = ("sessionid", "steamCountry", "steamLoginSecure", "browserid")
 def _filter_steam_cookies(cookie_str: str) -> str:
     seen = {}
     for part in cookie_str.split(";"):

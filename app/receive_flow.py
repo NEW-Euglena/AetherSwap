@@ -2,6 +2,7 @@
 from typing import Any, Callable, Dict, List, Optional, Tuple
 import requests
 from utils.delay import jittered_sleep
+from steam.session import STEAM_BROWSER_USER_AGENT
 def steam_request(retries: int, fn: Callable[[], requests.Response]) -> requests.Response:
     last_exc: Optional[Exception] = None
     attempts = max(1, int(retries) or 1)
@@ -98,7 +99,7 @@ def accept_steam_trade_offer(trade_offer_id: str, steam_cookies: Dict[str, str])
         url = STEAM_ACCEPT_URL.format(trade_offer_id=trade_offer_id)
         referer = STEAM_ACCEPT_REFERER.format(trade_offer_id=trade_offer_id)
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
+            "User-Agent": STEAM_BROWSER_USER_AGENT,
             "Origin": "https://steamcommunity.com",
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
             "Referer": referer,

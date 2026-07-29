@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import requests
 from bs4 import BeautifulSoup
+from steam.session import STEAM_BROWSER_USER_AGENT
 try:
     import urllib3
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -138,7 +139,7 @@ def _history_total_count(data: dict):
     return None
 def _fetch_sold_with_names(cookies: dict) -> tuple:
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
+        "User-Agent": STEAM_BROWSER_USER_AGENT,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "X-Requested-With": "XMLHttpRequest",
     }
