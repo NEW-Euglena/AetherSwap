@@ -739,8 +739,23 @@ class BuffBuyer:
             if not is_batch and order_id and has_paying_order_match:
                 try:
                     still_waiting = self._check_page_pay_status(str(order_id), game)
-                    self.last_payment_status_debug += f" page_pay_still_waiting={still_waiting}"
-                except (BuffAuthExpired, BuffVerificationRequired):
+                    if still_waiting is False:
+                        seller_send_ok = self._confirm_single_order_by_seller_send(
+                            str(order_id), game
+                        )
+                        self.last_payment_status_debug += (
+                            f" page_pay_still_waiting={still_waiting} "
+                            f"seller_send_accepted={seller_send_ok}"
+                        )
+                        if seller_send_ok is True:
+                            return True
+                        if seller_send_ok is False:
+                            return False
+                    else:
+                        self.last_payment_status_debug += (
+                            f" page_pay_still_waiting={still_waiting}"
+                        )
+                except (BuffAuthExpired, BuffRequestBlocked, BuffWriteResultUnknown):
                     raise
                 except Exception as e:
                     self.last_payment_status_debug += f" page_pay_error={type(e).__name__}: {e}"
@@ -1305,6 +1320,41 @@ class BuffBuyer:
         except Exception:
             return None
 
+    def _confirm_single_order_by_seller_send(
+        self, order_id: str, game: str = "csgo"
+    ) -> Optional[bool]:
+        confirmed_order_ids = getattr(
+            self, "_seller_send_confirmed_order_ids", None
+        )
+        if confirmed_order_ids is None:
+            confirmed_order_ids = set()
+            self._seller_send_confirmed_order_ids = confirmed_order_ids
+        if order_id in confirmed_order_ids:
+            return True
+        h = {
+            "Referer": f"https://buff.163.com/market/buy_order/history?game={game}"
+        }
+        payload = {
+            "bill_orders": [str(order_id)],
+            "game": game,
+            "steamid": None,
+        }
+        try:
+            res = self._make_request(
+                "POST",
+                API_ASK_SELLER_SEND,
+                headers=h,
+                data=json.dumps(payload),
+            )
+        except (BuffAuthExpired, BuffRequestBlocked, BuffWriteResultUnknown):
+            raise
+        except Exception:
+            return None
+        if res.get("code") == "OK":
+            confirmed_order_ids.add(str(order_id))
+            return True
+        return False
+
     def ask_seller_to_send(self, bill_order_id_or_ids, game: str = "csgo") -> bool:
         if isinstance(bill_order_id_or_ids, (list, tuple)):
             raw_ids = bill_order_id_or_ids
@@ -1329,13 +1379,20 @@ class BuffBuyer:
         if not ids:
             return False
 
+        confirmed_order_ids = getattr(
+            self, "_seller_send_confirmed_order_ids", None
+        )
+        if confirmed_order_ids is None:
+            confirmed_order_ids = set()
+            self._seller_send_confirmed_order_ids = confirmed_order_ids
+
         h = {"Referer": f"https://buff.163.com/market/buy_order/history?game={game}"}
         succeeded_ids = []
         failed_ids = []
         requests_sent = 0
 
         for order_id in ids:
-            if order_id in self._seller_send_confirmed_order_ids:
+            if order_id in confirmed_order_ids:
                 succeeded_ids.append(order_id)
                 continue
             payload = {
@@ -1378,7 +1435,7 @@ class BuffBuyer:
                     ) from exc
 
                 if res.get("code") == "OK":
-                    self._seller_send_confirmed_order_ids.add(order_id)
+                    confirmed_order_ids.add(order_id)
                     prompted = True
                     succeeded_ids.append(order_id)
                     break
