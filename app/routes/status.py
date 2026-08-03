@@ -1,8 +1,8 @@
 """Status, log, plan, and payment-related routes."""
-from datetime import datetime
 from pathlib import Path
 from fastapi import APIRouter
 from fastapi.responses import Response
+from app.config_loader import load_app_config_validated
 from app.state import (
     clear_log,
     confirm_payment,
@@ -14,6 +14,11 @@ from app.state import (
 )
 from config import get_buff
 from pydantic import BaseModel
+from utils.time import (
+    now_in_configured_timezone,
+    resolve_configured_timezone,
+    timestamp_in_configured_timezone,
+)
 router = APIRouter()
 class ConfirmBody(BaseModel):
     ok: bool
@@ -36,31 +41,43 @@ def api_log_export():
     lines = get_log(0)
     log_dir = Path("log")
     log_dir.mkdir(exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    configured_timezone, timezone_label = resolve_configured_timezone(
+        (load_app_config_validated().get("system") or {})
+    )
+    ts = now_in_configured_timezone(configured_timezone).strftime("%Y%m%d_%H%M%S")
     filename = log_dir / f"debug_{ts}.txt"
     def fmt_time(t):
         if t is None:
             return ""
-        return datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M:%S")
+        return timestamp_in_configured_timezone(
+            t,
+            configured_timezone,
+        ).strftime("%Y-%m-%d %H:%M:%S")
     content = "\n".join(
         f"{fmt_time(e.get('t'))} [{e.get('level', 'info')}] {e.get('msg', '')}"
         for e in lines
-    ) + "\n"
+    ) + f"\n# timezone: {timezone_label}\n"
     filename.write_text(content, encoding="utf-8")
     return {"ok": True, "path": str(filename), "lines": len(lines)}
 
 @router.get("/api/log/download")
 def api_log_download():
     lines = get_log(0)
+    configured_timezone, timezone_label = resolve_configured_timezone(
+        (load_app_config_validated().get("system") or {})
+    )
     def fmt_time(t):
         if t is None:
             return ""
-        return datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M:%S")
+        return timestamp_in_configured_timezone(
+            t,
+            configured_timezone,
+        ).strftime("%Y-%m-%d %H:%M:%S")
     content = "\n".join(
         f"{fmt_time(e.get('t'))} [{e.get('level', 'info')}] {e.get('msg', '')}"
         for e in lines
-    ) + "\n"
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ) + f"\n# timezone: {timezone_label}\n"
+    ts = now_in_configured_timezone(configured_timezone).strftime("%Y%m%d_%H%M%S")
     headers = {"Content-Disposition": f'attachment; filename="log_{ts}.txt"'}
     return Response(content, media_type="text/plain; charset=utf-8", headers=headers)
 @router.get("/api/plan")

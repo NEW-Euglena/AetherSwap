@@ -197,7 +197,7 @@ def _build_listing_plan(
             ctx.log(f"[出售] 跳过无名物品 assetid={aid}", "info", category="steam")
             continue
         
-        buy_record = _find_buy_record(purchases_snapshot, aid)
+        buy_record = _find_buy_record(purchases_snapshot, aid, market_hash_name)
         if not buy_record:
             same_name_record = next(
                 (
@@ -401,13 +401,29 @@ def _build_listing_plan(
     return to_list
 
 
-def _find_buy_record(purchases_snapshot: list, aid: str) -> Optional[dict]:
-    """仅按 assetid 精确查找购买记录，自动出售不得按名称兜底。"""
+def _find_buy_record(purchases_snapshot: list, aid: str, market_hash_name: str) -> Optional[dict]:
+    """仅返回当前仍持有且 assetid 精确匹配的购买记录。"""
+    aid = str(aid or "").strip()
     if not aid:
         return None
+
     for p in purchases_snapshot:
-        if str(p.get("assetid") or "").strip() == aid:
-            return p
+        if str(p.get("assetid") or "").strip() != aid:
+            continue
+
+        # 已售出、待收货或已上架的旧记录不能授权新的自动出售。
+        sale_price = p.get("sale_price")
+        if sale_price is not None:
+            try:
+                if float(sale_price) > 0:
+                    continue
+            except (TypeError, ValueError):
+                continue
+        if p.get("sold_at") not in (None, "", 0, 0.0):
+            continue
+        if p.get("pending_receipt") or p.get("listing"):
+            continue
+        return p
     return None
 
 
