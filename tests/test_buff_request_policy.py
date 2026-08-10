@@ -7,10 +7,12 @@ from requests.cookies import RequestsCookieJar, create_cookie
 
 from buff.buyer import (
     API_BUY,
+    API_BUY_PREVIEW,
     API_HISTORY,
     API_PAGE_PAY,
     API_SELL_ORDER,
     API_STEAM_TRADE,
+    API_USER_INFO,
     API_WX_PAY_QRCODE,
     DEFAULT_USER_AGENT,
     PAY_METHOD_WECHAT,
@@ -19,6 +21,7 @@ from buff.buyer import (
 from buff.request_policy import (
     BuffAuthExpired,
     BuffRateLimited,
+    BuffRequestBlocked,
     BuffRequestPolicy,
     BuffRiskControlTriggered,
     BuffVerificationRequired,
@@ -85,6 +88,49 @@ class FakeSession:
 
 def no_wait_policy(**kwargs):
     return BuffRequestPolicy(min_interval=0, state_path=None, persist=False, **kwargs)
+
+
+STEAM_ID = "76561198000000000"
+
+
+def user_info_response(*, steam_id=STEAM_ID):
+    return FakeResponse(
+        {
+            "code": "OK",
+            "data": {
+                "user_info": {
+                    "id": "buff-user",
+                    "steamid": steam_id,
+                }
+            },
+        }
+    )
+
+
+def buy_preview_response(*, pay_method=51, btn_clickable=True):
+    return FakeResponse(
+        {
+            "code": "OK",
+            "data": {
+                "pay_methods": [
+                    {
+                        "value": pay_method,
+                        "btn_clickable": btn_clickable,
+                    }
+                ]
+            },
+        }
+    )
+
+
+def checkout_responses(*after_preview, pay_method=51):
+    """Responses required before and after a single-item checkout POST."""
+
+    return (
+        user_info_response(),
+        buy_preview_response(pay_method=pay_method),
+        *after_preview,
+    )
 
 
 def test_default_user_agent_is_stable_and_can_be_overridden():
@@ -349,6 +395,8 @@ def test_legacy_get_and_buy_never_falls_through_to_second_sell_order():
                 },
             }
         ),
+        user_info_response(),
+        buy_preview_response(),
         FakeResponse({"code": "FAIL", "msg": "rejected"}),
     )
     buyer = BuffBuyer(
@@ -361,9 +409,11 @@ def test_legacy_get_and_buy_never_falls_through_to_second_sell_order():
 
     assert [(method, url) for method, url, _ in session.calls] == [
         ("GET", API_SELL_ORDER),
+        ("GET", API_USER_INFO),
+        ("GET", API_BUY_PREVIEW),
         ("POST", API_BUY),
     ]
-    payload = json.loads(session.calls[1][2]["data"])
+    payload = json.loads(session.calls[3][2]["data"])
     assert payload["sell_order_id"] == "sell-1"
 
 
@@ -579,18 +629,26 @@ def test_write_network_timeout_is_explicit_unknown_result():
 
 
 def test_public_lock_method_does_not_swallow_unknown_write_result():
-    session = FakeSession(requests.ConnectionError("connection dropped"))
+    session = FakeSession(
+        *checkout_responses(requests.ConnectionError("connection dropped"))
+    )
     buyer = BuffBuyer(
         "session=s; csrf_token=c", session=session, request_policy=no_wait_policy()
     )
 
     with pytest.raises(BuffWriteResultUnknown):
         buyer.lock_and_get_pay_url("csgo", 1, "sell-order", "10.00")
-    assert len(session.calls) == 1
+    assert [(method, url) for method, url, _ in session.calls] == [
+        ("GET", API_USER_INFO),
+        ("GET", API_BUY_PREVIEW),
+        ("POST", API_BUY),
+    ]
 
 
 def test_success_without_order_id_is_unknown_and_skips_payment_lookup():
-    session = FakeSession(FakeResponse({"code": "OK", "data": {}}))
+    session = FakeSession(
+        *checkout_responses(FakeResponse({"code": "OK", "data": {}}))
+    )
     buyer = BuffBuyer(
         "session=s; csrf_token=c", session=session, request_policy=no_wait_policy()
     )
@@ -598,12 +656,24 @@ def test_success_without_order_id_is_unknown_and_skips_payment_lookup():
     with pytest.raises(BuffWriteResultUnknown, match="订单号"):
         buyer.lock_and_get_pay_url("csgo", 1, "sell-order", "10.00")
     assert [(method, url) for method, url, _ in session.calls] == [
-        ("POST", API_BUY)
+        ("GET", API_USER_INFO),
+        ("GET", API_BUY_PREVIEW),
+        ("POST", API_BUY),
     ]
 
 
-def test_batch_finalize_success_without_order_id_stops_immediately():
-    session = FakeSession(FakeResponse({"code": "OK", "data": {}}))
+@pytest.mark.parametrize(
+    ("method_name", "args"),
+    [
+        ("batch_buy_create", (1, 10.0, 2, "csgo")),
+        (
+            "batch_buy_finalize",
+            ("csgo", 1, "sell-order", "10.00", "batch"),
+        ),
+    ],
+)
+def test_legacy_batch_writes_are_locally_blocked_without_http(method_name, args):
+    session = FakeSession()
     buyer = BuffBuyer(
         "session=s; csrf_token=c",
         pay_method=PAY_METHOD_WECHAT,
@@ -611,24 +681,16 @@ def test_batch_finalize_success_without_order_id_stops_immediately():
         request_policy=no_wait_policy(),
     )
 
-    with pytest.raises(BuffWriteResultUnknown, match="订单号"):
-        buyer.batch_buy_finalize("csgo", 1, "sell-order", "10.00", "batch")
-    assert [(method, url) for method, url, _ in session.calls] == [
-        ("POST", API_BUY)
-    ]
+    with pytest.raises(BuffRequestBlocked):
+        getattr(buyer, method_name)(*args)
+    assert session.calls == []
 
 
 @pytest.mark.parametrize(
-    ("method_name", "args", "pay_method"),
+    ("method_name", "args"),
     [
-        ("_execute_post_buy", ("csgo", 1, "sell-order", "10.00"), None),
-        ("lock_and_get_pay_url", ("csgo", 1, "sell-order", "10.00"), None),
-        ("batch_buy_create", (1, 10.0, 2, "csgo"), PAY_METHOD_WECHAT),
-        (
-            "batch_buy_finalize",
-            ("csgo", 1, "sell-order", "10.00", "batch"),
-            PAY_METHOD_WECHAT,
-        ),
+        ("_execute_post_buy", ("csgo", 1, "sell-order", "10.00")),
+        ("lock_and_get_pay_url", ("csgo", 1, "sell-order", "10.00")),
     ],
 )
 @pytest.mark.parametrize(
@@ -636,20 +698,191 @@ def test_batch_finalize_success_without_order_id_stops_immediately():
     [None, [], "bad-data", {}, {"id": ""}, {"id": {"bad": "type"}}],
 )
 def test_every_order_creating_write_rejects_malformed_success_data(
-    method_name, args, pay_method, success_data
+    method_name, args, success_data
 ):
-    session = FakeSession(FakeResponse({"code": "OK", "data": success_data}))
-    kwargs = {
-        "session": session,
-        "request_policy": no_wait_policy(),
-    }
-    if pay_method is not None:
-        kwargs["pay_method"] = pay_method
-    buyer = BuffBuyer("session=s; csrf_token=c", **kwargs)
+    session = FakeSession(
+        *checkout_responses(
+            FakeResponse({"code": "OK", "data": success_data})
+        )
+    )
+    buyer = BuffBuyer(
+        "session=s; csrf_token=c",
+        session=session,
+        request_policy=no_wait_policy(),
+    )
 
     with pytest.raises(BuffWriteResultUnknown):
         getattr(buyer, method_name)(*args)
-    assert len(session.calls) == 1
+    assert [(method, url) for method, url, _ in session.calls] == [
+        ("GET", API_USER_INFO),
+        ("GET", API_BUY_PREVIEW),
+        ("POST", API_BUY),
+    ]
+
+
+@pytest.mark.parametrize("pay_method", [51, PAY_METHOD_WECHAT])
+def test_execute_preflights_user_info_and_clickable_payment_method_before_post(
+    pay_method,
+):
+    session = FakeSession(
+        *checkout_responses(
+            FakeResponse({"code": "FAIL", "msg": "rejected"}),
+            pay_method=pay_method,
+        )
+    )
+    buyer = BuffBuyer(
+        "session=s; csrf_token=c",
+        pay_method=pay_method,
+        session=session,
+        request_policy=no_wait_policy(),
+    )
+
+    assert buyer._execute_post_buy("csgo", 1, "sell-order", "10.00") == "FAIL"
+    assert [(method, url) for method, url, _ in session.calls] == [
+        ("GET", API_USER_INFO),
+        ("GET", API_BUY_PREVIEW),
+        ("POST", API_BUY),
+    ]
+    preview_params = session.calls[1][2]["params"]
+    assert preview_params["steamid"] == STEAM_ID
+    assert preview_params["sell_order_id"] == "sell-order"
+    payload = json.loads(session.calls[2][2]["data"])
+    assert payload["steamid"] == STEAM_ID
+    assert payload["pay_method"] == pay_method
+
+
+def test_known_steam_id_skips_user_info_but_never_skips_buy_preview():
+    session = FakeSession(
+        buy_preview_response(),
+        FakeResponse({"code": "FAIL", "msg": "rejected"}),
+    )
+    buyer = BuffBuyer(
+        "session=s; csrf_token=c",
+        steam_id=STEAM_ID,
+        session=session,
+        request_policy=no_wait_policy(),
+    )
+
+    assert buyer._execute_post_buy("csgo", 1, "sell-order", "10.00") == "FAIL"
+    assert [(method, url) for method, url, _ in session.calls] == [
+        ("GET", API_BUY_PREVIEW),
+        ("POST", API_BUY),
+    ]
+
+
+@pytest.mark.parametrize(
+    "pay_methods",
+    [
+        [],
+        [{"value": 6, "btn_clickable": True}],
+        [{"value": 51, "btn_clickable": False}],
+        [{"value": 51}],
+    ],
+)
+@pytest.mark.parametrize(
+    ("method_name", "expected"),
+    [
+        ("_execute_post_buy", "FAIL"),
+        ("lock_and_get_pay_url", "PAY_METHOD_UNAVAILABLE"),
+    ],
+)
+def test_single_checkout_never_posts_without_explicit_clickable_payment_method(
+    method_name, expected, pay_methods
+):
+    session = FakeSession(
+        user_info_response(),
+        FakeResponse({"code": "OK", "data": {"pay_methods": pay_methods}}),
+    )
+    buyer = BuffBuyer(
+        "session=s; csrf_token=c",
+        session=session,
+        request_policy=no_wait_policy(),
+    )
+
+    result = getattr(buyer, method_name)("csgo", 1, "sell-order", "10.00")
+
+    if method_name == "lock_and_get_pay_url":
+        assert result["code"] == expected
+        assert result["created"] is False
+    else:
+        assert result == expected
+    assert [(method, url) for method, url, _ in session.calls] == [
+        ("GET", API_USER_INFO),
+        ("GET", API_BUY_PREVIEW),
+    ]
+
+
+def test_exact_http_200_login_required_after_post_is_known_auth_rejection():
+    session = FakeSession(
+        *checkout_responses(
+            FakeResponse(
+                {"code": "Login Required", "msg": "please login"},
+                status_code=200,
+            )
+        )
+    )
+    buyer = BuffBuyer(
+        "session=s; csrf_token=c",
+        session=session,
+        request_policy=no_wait_policy(),
+    )
+
+    with pytest.raises(BuffAuthExpired) as exc_info:
+        buyer.lock_and_get_pay_url("csgo", 1, "sell-order", "10.00")
+
+    assert not isinstance(exc_info.value, BuffWriteResultUnknown)
+    assert [(method, url) for method, url, _ in session.calls] == [
+        ("GET", API_USER_INFO),
+        ("GET", API_BUY_PREVIEW),
+        ("POST", API_BUY),
+    ]
+
+
+def test_buy_reuses_server_cashier_trace_and_current_browser_write_headers():
+    preview = FakeResponse(
+        {
+            "code": "OK",
+            "data": {
+                "pay_methods": [{"value": 51, "btn_clickable": True}]
+            },
+        },
+        headers={"Buff-Cashier-Trace-ID": "server-issued-trace"},
+    )
+    session = FakeSession(
+        user_info_response(),
+        preview,
+        FakeResponse({"code": "FAIL", "msg": "rejected"}),
+    )
+    buyer = BuffBuyer(
+        "session=s; csrf_token=c",
+        session=session,
+        request_policy=no_wait_policy(),
+    )
+
+    result = buyer.lock_and_get_pay_url("csgo", 1, "sell-order", "10.00")
+
+    assert result["success"] is False
+    preview_headers = session.calls[1][2]["headers"]
+    write_headers = session.calls[2][2]["headers"]
+    assert "Buff-Cashier-Trace-ID" not in preview_headers
+    assert write_headers["Buff-Cashier-Trace-ID"] == "server-issued-trace"
+    assert write_headers["Origin"] == "https://buff.163.com"
+    assert int(write_headers["Timezone-Offset-DST"]) % 60000 == 0
+
+
+def test_buy_never_invents_cashier_trace_when_server_did_not_issue_one():
+    session = FakeSession(
+        *checkout_responses(FakeResponse({"code": "FAIL", "msg": "rejected"}))
+    )
+    buyer = BuffBuyer(
+        "session=s; csrf_token=c",
+        session=session,
+        request_policy=no_wait_policy(),
+    )
+
+    buyer.lock_and_get_pay_url("csgo", 1, "sell-order", "10.00")
+
+    assert "Buff-Cashier-Trace-ID" not in session.calls[2][2]["headers"]
 
 
 @pytest.mark.parametrize(
@@ -811,8 +1044,10 @@ def test_every_issued_abnormal_write_is_unknown_and_keeps_relevant_circuit(
 )
 def test_order_created_payment_lookup_failure_returns_created_pending(pay_response):
     session = FakeSession(
-        FakeResponse({"code": "OK", "data": {"id": "order-created"}}),
-        pay_response,
+        *checkout_responses(
+            FakeResponse({"code": "OK", "data": {"id": "order-created"}}),
+            pay_response,
+        )
     )
     buyer = BuffBuyer(
         "session=s; csrf_token=c",
@@ -832,6 +1067,8 @@ def test_order_created_payment_lookup_failure_returns_created_pending(pay_respon
         "order_id": "order-created",
     }
     assert [(method, url) for method, url, _ in session.calls] == [
+        ("GET", API_USER_INFO),
+        ("GET", API_BUY_PREVIEW),
         ("POST", API_BUY),
         ("GET", API_PAGE_PAY),
     ]
@@ -839,8 +1076,10 @@ def test_order_created_payment_lookup_failure_returns_created_pending(pay_respon
 
 def test_payment_lookup_block_is_preserved_after_created_pending_result():
     session = FakeSession(
-        FakeResponse({"code": "OK", "data": {"id": "order-created"}}),
-        FakeResponse({"code": "FAIL"}, status_code=412),
+        *checkout_responses(
+            FakeResponse({"code": "OK", "data": {"id": "order-created"}}),
+            FakeResponse({"code": "FAIL"}, status_code=412),
+        )
     )
     buyer = BuffBuyer(
         "session=s; csrf_token=c",
@@ -856,14 +1095,17 @@ def test_payment_lookup_block_is_preserved_after_created_pending_result():
     assert result["order_id"] == "order-created"
     with pytest.raises(BuffRiskControlTriggered):
         buyer._make_request("GET", API_HISTORY)
-    assert len(session.calls) == 2
+    assert len(session.calls) == 4
 
 
 def test_wechat_payment_lookup_auth_failure_is_created_pending(monkeypatch):
     monkeypatch.setattr("buff.buyer.jittered_sleep", lambda *_args, **_kwargs: None)
     session = FakeSession(
-        FakeResponse({"code": "OK", "data": {"id": "wechat-order"}}),
-        FakeResponse({"code": "LOGIN_REQUIRED"}, status_code=401),
+        *checkout_responses(
+            FakeResponse({"code": "OK", "data": {"id": "wechat-order"}}),
+            FakeResponse({"code": "LOGIN_REQUIRED"}, status_code=401),
+            pay_method=PAY_METHOD_WECHAT,
+        )
     )
     buyer = BuffBuyer(
         "session=s; csrf_token=c",
@@ -879,6 +1121,8 @@ def test_wechat_payment_lookup_auth_failure_is_created_pending(monkeypatch):
     assert result["pay_type"] == "wechat"
     assert result["order_id"] == "wechat-order"
     assert [(method, url) for method, url, _ in session.calls] == [
+        ("GET", API_USER_INFO),
+        ("GET", API_BUY_PREVIEW),
         ("POST", API_BUY),
         ("GET", API_WX_PAY_QRCODE),
     ]
@@ -886,8 +1130,12 @@ def test_wechat_payment_lookup_auth_failure_is_created_pending(monkeypatch):
 
 def test_created_order_with_valid_payment_url_keeps_success_contract():
     session = FakeSession(
-        FakeResponse({"code": "OK", "data": {"id": "paid-order"}}),
-        FakeResponse({"code": "OK", "data": {"url": " https://pay.example/1 "}}),
+        *checkout_responses(
+            FakeResponse({"code": "OK", "data": {"id": "paid-order"}}),
+            FakeResponse(
+                {"code": "OK", "data": {"url": " https://pay.example/1 "}}
+            ),
+        )
     )
     buyer = BuffBuyer(
         "session=s; csrf_token=c",
@@ -901,6 +1149,12 @@ def test_created_order_with_valid_payment_url_keeps_success_contract():
         "pay_type": "alipay",
         "order_id": "paid-order",
     }
+    assert [(method, url) for method, url, _ in session.calls] == [
+        ("GET", API_USER_INFO),
+        ("GET", API_BUY_PREVIEW),
+        ("POST", API_BUY),
+        ("GET", API_PAGE_PAY),
+    ]
 
 
 def test_login_redirect_is_auth_expired_and_verification_redirect_is_fused():
@@ -991,7 +1245,15 @@ def test_initial_cookie_is_domain_scoped_and_expiration_removes_it():
 
 def test_verify_session_is_one_lightweight_get_and_trade_poll_uses_same_session():
     session = FakeSession(
-        FakeResponse({"code": "OK", "data": {"items": []}}),
+        FakeResponse(
+            {
+                "code": "OK",
+                "data": {
+                    "user_info": {"id": "buff-user", "steamid": "masked"},
+                    "meta_list": {},
+                },
+            }
+        ),
         FakeResponse({"code": "OK", "data": [{"tradeofferid": "1"}]}),
     )
     buyer = BuffBuyer(
@@ -999,13 +1261,85 @@ def test_verify_session_is_one_lightweight_get_and_trade_poll_uses_same_session(
     )
 
     assert buyer.verify_session() is True
+    assert buyer.steam_id == "masked"
     assert buyer.get_steam_trades() == [{"tradeofferid": "1"}]
     assert [call[0] for call in session.calls] == ["GET", "GET"]
-    assert session.calls[0][1] == API_HISTORY
-    assert session.calls[0][2]["params"]["page_size"] == "10"
-    assert session.calls[0][2]["params"]["state"] == "wait_pay"
+    assert session.calls[0][1] == API_USER_INFO
+    assert session.calls[0][2]["params"] == {
+        "meta_list": "buy_order_state"
+    }
+    assert session.calls[0][2]["headers"]["Referer"] == "https://buff.163.com/"
     assert session.calls[1][1] == API_STEAM_TRADE
     assert "to_receive" in session.calls[1][2]["headers"]["Referer"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"code": "OK", "data": {"meta_list": {}}},
+        {"code": "OK", "data": {"user_info": {}}},
+        {"code": "Invalid Argument", "error": "Not a valid choice"},
+    ],
+)
+def test_verify_session_rejects_responses_without_a_real_user(payload):
+    session = FakeSession(FakeResponse(payload))
+    buyer = BuffBuyer(
+        "session=s; csrf_token=c",
+        session=session,
+        request_policy=no_wait_policy(),
+    )
+
+    assert buyer.verify_session() is False
+    assert len(session.calls) == 1
+    assert session.calls[0][1] == API_USER_INFO
+
+
+def test_waiting_payment_history_uses_current_state_contract_without_state_param(
+    monkeypatch,
+):
+    session = FakeSession(
+        FakeResponse(
+            {
+                "code": "OK",
+                "data": {
+                    "items": [
+                        {
+                            "id": "bill-paying",
+                            "state": "PAYING",
+                            "pay_expire_timeout": 120,
+                        },
+                        {
+                            "id": "bill-expired",
+                            "state": "PAYING",
+                            "pay_expire_timeout": -1,
+                        },
+                        {
+                            "id": "bill-success",
+                            "state": "SUCCESS",
+                            "pay_expire_timeout": 120,
+                        },
+                    ]
+                },
+            }
+        )
+    )
+    buyer = BuffBuyer(
+        "session=s; csrf_token=c",
+        session=session,
+        request_policy=no_wait_policy(),
+    )
+    fetched = []
+    monkeypatch.setattr(
+        buyer,
+        "_fetch_pay_url",
+        lambda game, order_id: fetched.append((game, order_id)),
+    )
+
+    assert buyer.check_wait_pay_orders() is True
+
+    assert fetched == [("csgo", "bill-paying")]
+    assert session.calls[0][1] == API_HISTORY
+    assert "state" not in session.calls[0][2]["params"]
 
 
 def test_cookie_persistence_failure_never_masks_operation_result_or_exception():

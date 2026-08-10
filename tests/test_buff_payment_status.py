@@ -1,6 +1,8 @@
 import threading
 import time
 
+import pytest
+
 
 def test_single_order_wait_pay_does_not_use_page_pay_as_paid(monkeypatch):
     from buff.buyer import API_HISTORY, API_PAGE_PAY, BuffBuyer
@@ -182,7 +184,7 @@ def test_single_order_paying_left_pay_page_confirms_by_seller_command(monkeypatc
         if url == API_PAGE_PAY:
             return {"code": "FAIL"}
         if url == API_ASK_SELLER_SEND:
-            return {"code": "OK"}
+            return {"code": "OK", "data": {"order-1": "OK"}}
         return {"code": "OK", "data": {}}
 
     monkeypatch.setattr(buyer, "_make_request", fake_request)
@@ -225,13 +227,16 @@ def test_single_order_paying_left_pay_page_rejected_by_seller_command(monkeypatc
     assert buyer.check_payment_status("order-1", 123, start, False) is False
 
 
-def test_single_order_paying_left_pay_page_seller_command_exception_keeps_waiting(monkeypatch):
+def test_single_order_paying_left_pay_page_unknown_seller_command_is_not_retried(monkeypatch):
+    from buff import BuffWriteResultUnknown
     from buff.buyer import API_ASK_SELLER_SEND, API_HISTORY, API_PAGE_PAY, BuffBuyer
 
     buyer = BuffBuyer("csrf_token=abc")
     start = time.time()
+    seller_send_calls = 0
 
     def fake_request(method, url, **kwargs):
+        nonlocal seller_send_calls
         if url == API_HISTORY:
             state = (kwargs.get("params") or {}).get("state", "")
             if state == "":
@@ -250,12 +255,18 @@ def test_single_order_paying_left_pay_page_seller_command_exception_keeps_waitin
         if url == API_PAGE_PAY:
             return {"code": "FAIL"}
         if url == API_ASK_SELLER_SEND:
+            seller_send_calls += 1
             raise RuntimeError("temporary network error")
         return {"code": "OK", "data": {}}
 
     monkeypatch.setattr(buyer, "_make_request", fake_request)
 
-    assert buyer.check_payment_status("order-1", 123, start, False) is None
+    with pytest.raises(BuffWriteResultUnknown):
+        buyer.check_payment_status("order-1", 123, start, False)
+    with pytest.raises(BuffWriteResultUnknown):
+        buyer.check_payment_status("order-1", 123, start, False)
+
+    assert seller_send_calls == 1
 
 
 def test_payment_status_periodically_runs_full_scan(monkeypatch):
@@ -473,3 +484,70 @@ def test_auto_detect_logs_payment_match_debug(monkeypatch):
     )
 
     assert any("自动检测匹配诊断: not_found" in message for _level, message in logs)
+
+
+def test_auto_detect_propagates_unknown_write_result_to_waiting_thread(monkeypatch):
+    import app.pipeline_steps as steps
+    from buff import BuffWriteResultUnknown
+
+    unknown = BuffWriteResultUnknown(
+        "提醒卖家发货结果未知",
+        method="POST",
+        url="https://buff.invalid/ask",
+    )
+    confirm_calls = []
+    original_sleep = time.sleep
+    original_time = time.time
+    fake_now = [1000.0]
+
+    class FakeBuffClient:
+        def check_payment_status(self, **_kwargs):
+            raise unknown
+
+    def fake_time():
+        fake_now[0] += 1.0
+        return fake_now[0]
+
+    def fake_sleep(_seconds):
+        original_sleep(0)
+
+    def confirm_payment(value):
+        confirm_calls.append(value)
+
+    def wait_payment_confirm(timeout_seconds=None):
+        deadline = original_time() + 1.0
+        while not confirm_calls and original_time() < deadline:
+            original_sleep(0.001)
+        return False
+
+    monkeypatch.setattr(steps.time, "time", fake_time)
+    monkeypatch.setattr(steps.time, "sleep", fake_sleep)
+
+    with pytest.raises(BuffWriteResultUnknown) as exc_info:
+        steps._do_payment_notify_and_wait(
+            item={"name": "Test Item"},
+            config={
+                "notify": {
+                    "auto_detect_payment": True,
+                    "email_timeout_seconds": 1,
+                }
+            },
+            unit_price=1.0,
+            num=1,
+            pay_url="https://pay.example",
+            pay_type="alipay",
+            order_id="order-1",
+            acc=0.0,
+            set_pending_payment=lambda _data: None,
+            wait_payment_confirm=wait_payment_confirm,
+            confirm_payment=confirm_payment,
+            is_stop_requested=lambda: False,
+            log_fn=None,
+            buff_client=FakeBuffClient(),
+            goods_id=123,
+            start_time=1000.0,
+            is_batch=False,
+        )
+
+    assert exc_info.value is unknown
+    assert confirm_calls == [False]

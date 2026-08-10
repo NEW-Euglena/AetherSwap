@@ -195,6 +195,20 @@ def _supports_keyword_argument(callable_obj: Any, name: str) -> bool:
     )
 
 
+def _verify_checkout_session(buff_client: Any, game: str) -> None:
+    """Fail before journaling or POST when the live BUFF session is invalid."""
+
+    verify = getattr(buff_client, "verify_session", None)
+    if not callable(verify):
+        # Lightweight test doubles and legacy adapters do not expose the probe;
+        # the production BuffClient always does.
+        return
+    if not bool(verify(game)):
+        raise BuffAuthExpired(
+            "BUFF 在线会话预检失败，未发送锁单请求"
+        )
+
+
 def _ensure_checkout_identity_unchanged(buff_client: Any) -> None:
     guard = get_unresolved_checkout() or {}
     expected = str(guard.get("credential_fingerprint") or "")
@@ -1075,6 +1089,7 @@ def _do_payment_notify_and_wait(
         timeout_sec = int(notify_cfg.get("email_timeout_seconds", 300))
         auto_detect = notify_cfg.get("auto_detect_payment", True)
         auto_detect_done = threading.Event()
+        auto_detect_errors: List[BuffWriteResultUnknown] = []
 
         if email_user and email_pass:
             def _email_waiter() -> None:
@@ -1153,6 +1168,17 @@ def _do_payment_notify_and_wait(
                                 )
                         else:
                             consecutive_misses = 0
+                    except BuffWriteResultUnknown as exc:
+                        auto_detect_errors.append(exc)
+                        if log_fn:
+                            log_fn(
+                                f"[Buff]   → 自动检测写请求结果未知: {exc}，已停止后续 BUFF 写请求",
+                                "warn",
+                            )
+                        if not auto_detect_done.is_set():
+                            auto_detect_done.set()
+                            confirm_payment(False)
+                        return
                     except (BuffAuthExpired, BuffRequestBlocked) as exc:
                         if log_fn:
                             log_fn(
@@ -1172,6 +1198,8 @@ def _do_payment_notify_and_wait(
             threading.Thread(target=_auto_detect_waiter, daemon=True).start()
 
         ok = wait_payment_confirm(timeout_seconds=timeout_sec)
+        if auto_detect_errors:
+            raise auto_detect_errors[0]
         if log_fn:
             log_fn(
                 f"[Buff]   → 用户付款确认最终结果={'成功' if ok else '取消/失败'}",
@@ -1852,6 +1880,31 @@ def lock_and_confirm_payment(
                         _PurchaseAttemptStatus.TIME_WINDOW_CLOSED,
                         reason="等待请求锁期间购买时间窗已关闭",
                     )
+                _verify_checkout_session(buff_client, game_buff)
+                prepared_preview = None
+                prepare_single = getattr(buff_client, "prepare_single_buy", None)
+                if callable(prepare_single):
+                    preparation = prepare_single(
+                        game_buff,
+                        goods_id,
+                        str(o.get("id") or ""),
+                        str(o.get("price") or ""),
+                    )
+                    if not isinstance(preparation, dict) or not preparation.get(
+                        "success"
+                    ):
+                        preparation_info = (
+                            preparation if isinstance(preparation, dict) else {}
+                        )
+                        return _PurchaseAttempt(
+                            _PurchaseAttemptStatus.FAILED,
+                            reason=str(
+                                preparation_info.get("msg")
+                                or preparation_info.get("code")
+                                or "BUFF 购买预检未通过"
+                            ),
+                        )
+                    prepared_preview = preparation.get("preview")
                 identity = _checkout_credential_identity(buff_client)
                 intent = begin_checkout(
                     "single",
@@ -1884,13 +1937,24 @@ def lock_and_confirm_payment(
                     )
                 try:
                     lock_order = buff_client.lock_and_get_pay_url
-                    if _supports_keyword_argument(lock_order, "on_created"):
+                    supports_created = _supports_keyword_argument(
+                        lock_order, "on_created"
+                    )
+                    supports_preview = _supports_keyword_argument(
+                        lock_order, "preview"
+                    )
+                    if supports_created or supports_preview:
+                        optional_kwargs = {}
+                        if supports_created:
+                            optional_kwargs["on_created"] = _on_order_created
+                        if supports_preview:
+                            optional_kwargs["preview"] = prepared_preview
                         result = lock_order(
                             game_buff,
                             goods_id,
                             o["id"],
                             o["price"],
-                            on_created=_on_order_created,
+                            **optional_kwargs,
                         )
                     else:
                         result = lock_order(
@@ -1915,11 +1979,12 @@ def lock_and_confirm_payment(
                         order_id=str(getattr(e, "order_id", "") or ""),
                     )
                 except (BuffAuthExpired, BuffRequestBlocked):
-                    # These exception types are guaranteed to be raised by the
-                    # buyer only before the checkout POST is sent. Post-send
-                    # auth/risk responses are BuffWriteResultUnknown.
+                    # A failed preflight is blocked before POST.  BUFF's exact
+                    # HTTP-200 `Login Required` response is also a verified
+                    # application-level rejection, so neither case created an
+                    # order and neither should leave a reconciliation gate.
                     resolve_checkout(
-                        "write_blocked_before_send",
+                        "auth_rejected_or_blocked_not_created",
                         expected_intent_id=checkout_intent_id,
                     )
                     raise
@@ -2006,29 +2071,48 @@ def lock_and_confirm_payment(
             ),
             reason="订单已创建，等待付款确认",
         )
-        paid = _do_wait_payment_and_append(
-            buff_client,
-            item,
-            config,
-            p,
-            1,
-            goods_id,
-            pay_url,
-            result.get("pay_type") or "alipay",
-            order_id,
-            checkout_intent_id,
-            acc,
-            set_pending_payment,
-            wait_payment_confirm,
-            confirm_payment,
-            is_stop_requested,
-            append_purchase,
-            log_fn,
-            game_buff,
-            sell_order_id=str(o.get("id") or ""),
-            market_price=ref_price,
-            on_entering_payment=on_entering_payment,
-        )
+        try:
+            paid = _do_wait_payment_and_append(
+                buff_client,
+                item,
+                config,
+                p,
+                1,
+                goods_id,
+                pay_url,
+                result.get("pay_type") or "alipay",
+                order_id,
+                checkout_intent_id,
+                acc,
+                set_pending_payment,
+                wait_payment_confirm,
+                confirm_payment,
+                is_stop_requested,
+                append_purchase,
+                log_fn,
+                game_buff,
+                sell_order_id=str(o.get("id") or ""),
+                market_price=ref_price,
+                on_entering_payment=on_entering_payment,
+            )
+        except BuffWriteResultUnknown as exc:
+            update_checkout(
+                expected_intent_id=checkout_intent_id,
+                stage="payment_probe_unknown",
+                order_id=order_id,
+                reason=str(exc) or "自动支付检测写请求结果未知",
+                last_error_type=type(exc).__name__,
+            )
+            if log_fn:
+                log_fn(
+                    f"[Buff]   → 自动支付检测写请求结果未知: {exc}",
+                    "warn",
+                )
+            return _PurchaseAttempt(
+                _PurchaseAttemptStatus.UNKNOWN_AFTER_SEND,
+                reason=str(exc) or "自动支付检测写请求结果未知",
+                order_id=order_id,
+            )
         if paid is None:
             update_checkout(
                 expected_intent_id=checkout_intent_id,
@@ -2048,6 +2132,13 @@ def lock_and_confirm_payment(
         )
 
     def _try_batch_buy() -> _PurchaseAttempt:
+        if getattr(buff_client, "supports_batch_buy", True) is False:
+            return _PurchaseAttempt(
+                _PurchaseAttemptStatus.SAFE_TO_FALLBACK,
+                reason=(
+                    "BUFF 当前批量购买协议尚未安全支持，未发送批量写请求"
+                ),
+            )
         configured_pay_method = str(
             getattr(buff_client, "_pay_method", None)
             or buff_cfg.get("pay_method")
@@ -2075,6 +2166,7 @@ def lock_and_confirm_payment(
                         _PurchaseAttemptStatus.TIME_WINDOW_CLOSED,
                         reason="等待请求锁期间购买时间窗已关闭",
                     )
+                _verify_checkout_session(buff_client, game_buff)
                 identity = _checkout_credential_identity(buff_client)
                 intent = begin_checkout(
                     "batch",
@@ -2138,7 +2230,7 @@ def lock_and_confirm_payment(
                     )
                 except (BuffAuthExpired, BuffRequestBlocked):
                     resolve_checkout(
-                        "write_blocked_before_send",
+                        "auth_rejected_or_blocked_not_created",
                         expected_intent_id=checkout_intent_id,
                     )
                     raise
