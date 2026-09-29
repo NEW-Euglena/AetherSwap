@@ -150,7 +150,7 @@
 **第 1 步：克隆项目**
 
 ```bash
-git clone https://gitee.com/vexed-wilson/AetherSwap.git
+git clone https://github.com/VexedWilosn/AetherSwap.git
 cd AetherSwap
 ```
 
@@ -208,7 +208,7 @@ set AETHERSWAP_AGREE_DISCLAIMER=1
 
 ```bash
 # 1. 克隆项目并进入目录
-git clone https://gitee.com/vexed-wilson/AetherSwap.git
+git clone https://github.com/VexedWilosn/AetherSwap.git
 cd AetherSwap
 
 # 2. 准备环境变量（可选，Docker Compose 会自动读取 .env）

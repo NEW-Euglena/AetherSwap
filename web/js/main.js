@@ -252,8 +252,25 @@ function hideReloginModal() {
 async function refreshInventory(forceRefresh = true) {
   if (inventoryRefreshInFlight) return;
   inventoryRefreshInFlight = true;
+  const dataStatus = el("inv-data-status");
+  if (dataStatus) {
+    dataStatus.textContent = "正在读取库存…";
+    dataStatus.title = "";
+  }
   try {
     const d = await fetchJson(API + "/inventory" + (forceRefresh ? "?refresh=1" : ""));
+    if (dataStatus) {
+      const authLabels = {
+        auth_pending: "登录凭证等待超时",
+        busy: "登录进行中",
+        network_error: "会话状态暂无法确认",
+        account_changed: "账号已切换",
+      };
+      const sourceLabel = d.source === "live" ? "实时库存" : "缓存库存";
+      const detail = authLabels[d.auth_status] || (d.auth_expired ? "登录已过期" : d.error ? "刷新失败" : "");
+      dataStatus.textContent = detail ? `${sourceLabel} · ${detail}` : sourceLabel;
+      dataStatus.title = d.error || "";
+    }
     if (d.auth_expired && _hasAnyAccount) {
       showReloginModal("steam", { reason: d.auth_expired_reason, error: d.error });
       return;
@@ -270,12 +287,16 @@ async function refreshInventory(forceRefresh = true) {
       const tradeHtml =
         `<span class="${it.can_trade ? "text-ok" : "text-bad"}">${it.can_trade ? "是" : "否"}</span>` +
         (it.tradable ? "" : ' <span class="text-bad">(不可交易)</span>');
-      const rawTime = it.cooldown_at_iso || it.cooldown_text || "";
-      let displayTime = rawTime;
-      if (it.cooldown_at_iso) {
-        const d = new Date(it.cooldown_at_iso);
+      // Also extract timestamps from inventory cached before the backend parser fix.
+      const dateMatch = (it.cooldown_text || "").match(/\[date\](\d+)\[\/date\]/);
+      const cooldownSeconds = Number(it.cooldown_at || (dateMatch && dateMatch[1]));
+      const rawTime = it.cooldown_at_iso || (cooldownSeconds > 0 ? cooldownSeconds * 1000 : null);
+      let displayTime = "";
+      if (rawTime !== null) {
+        const d = new Date(rawTime);
         if (!isNaN(d.getTime())) {
-          displayTime = d.toLocaleString();
+          const pad = (value) => String(value).padStart(2, "0");
+          displayTime = `${String(d.getFullYear()).padStart(4, "0")}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
         }
       }
       const timeHtml = displayTime ? `<span class="text-bad">${escapeHtml(displayTime)}</span>` : "—";
@@ -310,6 +331,10 @@ async function refreshInventory(forceRefresh = true) {
     const taxEl = el("inv-tax-value");
     if (taxEl) taxEl.textContent = (totalValue / 1.15).toFixed(2);
   } catch (e) {
+    if (dataStatus) {
+      dataStatus.textContent = "刷新失败 · 保留原有库存";
+      dataStatus.title = e.message || "";
+    }
     toast("刷新库存失败", e.message || "请检查 Steam Cookie");
   } finally {
     inventoryRefreshInFlight = false;

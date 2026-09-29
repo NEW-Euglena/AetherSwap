@@ -326,6 +326,9 @@ def test_single_order_payment_cancel_does_not_lock_again():
                 "pay_type": "alipay",
             }
 
+        def ask_seller_to_send(self, *_args):
+            raise AssertionError("unconfirmed payment must not prompt shipping")
+
     client = BuffClient()
     kwargs, pending, purchases = _checkout_args(wait_result=False)
 
@@ -618,6 +621,9 @@ def test_batch_payment_cancel_does_not_fallback_to_single_order():
             self.finalize_calls += 1
             return []
 
+        def ask_seller_to_send(self, *_args):
+            raise AssertionError("unconfirmed payment must not prompt shipping")
+
     client = BuffClient()
     kwargs, _pending, purchases = _checkout_args(wait_result=False)
 
@@ -883,7 +889,6 @@ def test_purchase_amount_is_counted_when_post_commit_shipping_prompt_is_blocked(
     )
     monkeypatch.setattr(steps, "_fetch_smart_market_price", lambda *_args, **_kwargs: None)
     config = _config()
-    config["buff"]["auto_ask_seller_to_send"] = True
 
     acc, bought, stopped = pipeline_module._process_deals_for_target(
         ctx,
@@ -907,7 +912,10 @@ def test_purchase_amount_is_counted_when_post_commit_shipping_prompt_is_blocked(
     assert state.pending is None
 
 
-def test_successful_batch_records_reconciliation_identifiers(monkeypatch):
+@pytest.mark.parametrize("legacy_setting", [None, False])
+def test_successful_batch_records_identifiers_then_prompts_shipping(monkeypatch, legacy_setting):
+    shipping_calls = []
+
     class BuffClient:
         _pay_method = "wechat"
 
@@ -925,11 +933,16 @@ def test_successful_batch_records_reconciliation_identifiers(monkeypatch):
                 {"id": "sell-2", "price": 10.0, "bill_order_id": "bill-2"},
             ]
 
-        def ask_seller_to_send(self, *_args):
+        def ask_seller_to_send(self, bill_order_ids, game):
+            assert len(purchases) == 2
+            shipping_calls.append((bill_order_ids, game))
             return True
 
     kwargs, _pending, purchases = _checkout_args(wait_result=True)
     monkeypatch.setattr(steps, "_fetch_smart_market_price", lambda *_args, **_kwargs: None)
+    config = _config("wechat")
+    if legacy_setting is not None:
+        config["buff"]["auto_ask_seller_to_send"] = legacy_setting
 
     paid = steps.lock_and_confirm_payment(
         BuffClient(),
@@ -937,7 +950,7 @@ def test_successful_batch_records_reconciliation_identifiers(monkeypatch):
             {"id": "sell-1", "price": "10.0"},
             {"id": "sell-2", "price": "10.0"},
         ]),
-        _config("wechat"),
+        config,
         **kwargs,
     )
 
@@ -945,6 +958,7 @@ def test_successful_batch_records_reconciliation_identifiers(monkeypatch):
     assert [record["bill_order_id"] for record in purchases] == ["bill-1", "bill-2"]
     assert all(record["batch_id"] == "batch-recorded" for record in purchases)
     assert [record["buff_sell_order_id"] for record in purchases] == ["sell-1", "sell-2"]
+    assert shipping_calls == [(["bill-1", "bill-2"], "csgo")]
 
 
 def test_partial_batch_finalize_records_committed_items_and_halts(monkeypatch):
@@ -1378,27 +1392,32 @@ def test_all_batch_ids_are_durable_before_local_db_append_failure(monkeypatch):
     assert unresolved["completed_order_ids"] == ["bill-1", "bill-2"]
 
 
-def test_automatic_shipping_prompt_is_disabled_by_default(monkeypatch):
+@pytest.mark.parametrize("legacy_setting", [None, False])
+def test_single_purchase_automatically_prompts_shipping_after_recording(monkeypatch, legacy_setting):
     class BuffClient:
         _pay_method = "alipay"
 
         def __init__(self):
-            self.shipping_calls = 0
+            self.shipping_calls = []
 
         def lock_and_get_pay_url(self, *_args):
             return {
                 "success": True,
-                "order_id": "bill-no-auto-prompt",
-                "pay_url": "https://pay.invalid/no-auto-prompt",
+                "order_id": "bill-auto-prompt",
+                "pay_url": "https://pay.invalid/auto-prompt",
                 "pay_type": "alipay",
             }
 
-        def ask_seller_to_send(self, *_args):
-            self.shipping_calls += 1
-            raise AssertionError("automatic prompt should be disabled")
+        def ask_seller_to_send(self, order_id, game):
+            assert len(purchases) == 1
+            self.shipping_calls.append((order_id, game))
+            return True
 
     client = BuffClient()
     kwargs, _pending, purchases = _checkout_args(wait_result=True)
+    config = _config()
+    if legacy_setting is not None:
+        config["buff"]["auto_ask_seller_to_send"] = legacy_setting
     monkeypatch.setattr(
         steps,
         "_fetch_smart_market_price",
@@ -1408,16 +1427,16 @@ def test_automatic_shipping_prompt_is_disabled_by_default(monkeypatch):
     paid = steps.lock_and_confirm_payment(
         client,
         _item([{"id": "sell-1", "price": "10.0"}]),
-        _config(),
+        config,
         **kwargs,
     )
 
     assert paid == 10.0
-    assert client.shipping_calls == 0
+    assert client.shipping_calls == [("bill-auto-prompt", "csgo")]
     assert len(purchases) == 1
 
 
-def test_opted_in_shipping_prompt_unknown_halts_after_recording(monkeypatch):
+def test_shipping_prompt_unknown_halts_after_recording(monkeypatch):
     class BuffClient:
         _pay_method = "alipay"
 
@@ -1437,7 +1456,6 @@ def test_opted_in_shipping_prompt_unknown_halts_after_recording(monkeypatch):
             )
 
     config = _config()
-    config["buff"]["auto_ask_seller_to_send"] = True
     kwargs, _pending, purchases = _checkout_args(wait_result=True)
     monkeypatch.setattr(
         steps,
@@ -1486,7 +1504,6 @@ def test_batch_shipping_prompt_unknown_preserves_all_committed_items(monkeypatch
             )
 
     config = _config("wechat")
-    config["buff"]["auto_ask_seller_to_send"] = True
     kwargs, _pending, purchases = _checkout_args(wait_result=True)
     monkeypatch.setattr(
         steps,
@@ -1515,6 +1532,306 @@ def test_batch_shipping_prompt_unknown_preserves_all_committed_items(monkeypatch
     unresolved = get_unresolved_checkout()
     assert unresolved["stage"] == "shipping_reminder_unknown"
     assert unresolved["completed_order_ids"] == ["bill-1", "bill-2"]
+
+
+def test_alipay_batch_uses_advertised_payment_type_and_never_single_fallback(monkeypatch):
+    class BuffClient:
+        _pay_method = "alipay"
+        batch_pay_methods = ("wechat", "alipay")
+
+        def try_batch_buy(self, *_args, on_created=None):
+            on_created("funding-alipay")
+            return {"success": True, "batch_id": "funding-alipay",
+                    "pay_url": "https://pay.invalid/batch", "pay_type": "alipay",
+                    "total_price": 20.0}
+
+        def batch_buy_find_and_finalize(self, *_args, on_match=None):
+            from app.services.buff_checkout_guard import get_unresolved_checkout
+
+            rows = []
+            for i in (1, 2):
+                row = {"id": f"sell-{i}", "price": 10.0, "bill_order_id": f"bill-{i}"}
+                rows.append(row)
+                on_match(row, rows)
+                assert get_unresolved_checkout()["completed_order_ids"] == [
+                    match["bill_order_id"] for match in rows]
+            return rows
+
+        def ask_seller_to_send(self, order_ids, _game):
+            assert len(purchases) == 2
+            assert order_ids == ["bill-1", "bill-2"]
+            return True
+
+        def lock_and_get_pay_url(self, *_args):
+            raise AssertionError("supported Alipay batch must not fall back to single")
+
+    monkeypatch.setattr(steps, "_fetch_smart_market_price", lambda *_args, **_kwargs: None)
+    kwargs, pending, purchases = _checkout_args(wait_result=True)
+    result = steps.lock_and_confirm_payment(
+        BuffClient(), _item([{"id": "sell-1", "price": "10.0"},
+                             {"id": "sell-2", "price": "10.0"}]), _config(), **kwargs)
+    from app.services.buff_checkout_guard import get_unresolved_checkout
+
+    assert result == 20.0
+    assert pending[0]["pay_type"] == "alipay"
+    assert get_unresolved_checkout() is None
+
+
+def test_batch_fallback_log_preserves_actual_preview_reason():
+    reason = "wallet upgrade required"
+
+    class BuffClient:
+        _pay_method = "wechat"
+
+        def try_batch_buy(self, *_args):
+            return {"success": False, "created": False, "code": "NOT_SUPPORTED", "msg": reason}
+
+        def lock_and_get_pay_url(self, *_args):
+            return {"success": False, "created": False, "code": "FAIL"}
+
+    kwargs, _pending, _purchases = _checkout_args()
+    logs = []
+    steps.lock_and_confirm_payment(
+        BuffClient(), _item([{"id": "sell-1", "price": "10.0"},
+                             {"id": "sell-2", "price": "10.0"}]), _config("wechat"),
+        log_fn=lambda msg, _level: logs.append(msg), **kwargs)
+    assert any("降级" in msg and reason in msg for msg in logs)
+
+
+def test_batch_fallback_refetches_snapshot_instead_of_skipping_the_purchase():
+    """A read-only batch preview may outlive the sell-order cache TTL.
+
+    The single-item fallback must refresh and re-validate the snapshot before
+    locking, instead of aborting with a stale-snapshot warning and buying
+    nothing.
+    """
+    item = _item([{"id": "sell-1", "price": "10.0"},
+                  {"id": "sell-2", "price": "10.0"}])
+
+    class BuffClient:
+        _pay_method = "alipay"
+        batch_pay_methods = ("wechat", "alipay")
+
+        def __init__(self):
+            self.refreshes = 0
+            self.lock_calls = 0
+
+        def try_batch_buy(self, *_args):
+            # The preview POST is read-only, yet slow enough to expire the TTL.
+            item["_buff_sell_orders_fetched_at"] = time.time() - 30
+            return {"success": False, "created": False, "code": "NOT_SUPPORTED",
+                    "msg": "BUFF 未提供当前支付方式的批量付款选项: 该订单不支持支付宝余额"}
+
+        def get_sell_orders(self, *_args):
+            self.refreshes += 1
+            return [{"id": "sell-2", "price": "10.0"},
+                    {"id": "sell-3", "price": "10.0"}]
+
+        def lock_and_get_pay_url(self, *_args, **_kwargs):
+            self.lock_calls += 1
+            return {"success": False, "created": False, "code": "FAIL",
+                    "msg": "rejected"}
+
+    client = BuffClient()
+    kwargs, _pending, _purchases = _checkout_args()
+    logs = []
+    steps.lock_and_confirm_payment(
+        client, item, _config(),
+        log_fn=lambda msg, _level: logs.append(msg), **kwargs)
+
+    assert client.refreshes == 1
+    assert client.lock_calls == 1
+    assert not any("本次不发送锁单请求" in msg for msg in logs)
+
+
+def test_fallback_with_unrefreshable_snapshot_never_locks():
+    item = _item([{"id": "sell-1", "price": "10.0"},
+                  {"id": "sell-2", "price": "10.0"}])
+
+    class BuffClient:
+        _pay_method = "alipay"
+        batch_pay_methods = ("wechat", "alipay")
+
+        def try_batch_buy(self, *_args):
+            item["_buff_sell_orders_fetched_at"] = time.time() - 30
+            return {"success": False, "created": False, "code": "NOT_SUPPORTED",
+                    "msg": "BUFF 未提供当前支付方式的批量付款选项: 该订单不支持支付宝余额"}
+
+        def get_sell_orders(self, *_args):
+            return []
+
+        def lock_and_get_pay_url(self, *_args, **_kwargs):
+            raise AssertionError("a stale snapshot must never be locked")
+
+    kwargs, _pending, _purchases = _checkout_args()
+    logs = []
+    result = steps.lock_and_confirm_payment(
+        BuffClient(), item, _config(),
+        log_fn=lambda msg, _level: logs.append(msg), **kwargs)
+
+    assert result is None
+    assert any("本次不发送锁单请求" in msg for msg in logs)
+
+
+@pytest.mark.parametrize("price,available,budget,expected_mode,expected_quantity", [
+    ("10.40", 2, 20.0, "single", 1),
+    ("10.40", 3, 30.0, "batch", 2),
+    ("10.00", 1, 30.0, "single", 1),
+    ("10.00", 2, 30.0, "batch", 2),
+])
+@pytest.mark.parametrize("slow_read", [1, 2])
+def test_refreshed_batch_recalculates_quantity_and_mode(
+    monkeypatch, price, available, budget, expected_mode, expected_quantity, slow_read,
+):
+    clock = [1000.0]
+    monkeypatch.setattr(steps.time, "time", lambda: clock[0])
+    item = _item([{"id": f"old-{i}", "price": "10.00"} for i in range(3)])
+    config = _config("wechat")
+    config["_strategy_runtime"]["buy"]["enabled_modules"] = ["guard.held_same_item_guard"]
+
+    holdings_reads = [0]
+
+    def slow_holdings_read():
+        holdings_reads[0] += 1
+        if holdings_reads[0] == slow_read:
+            clock[0] += 4
+        return []
+
+    monkeypatch.setattr(steps, "get_purchases", slow_holdings_read)
+    attempts = []
+
+    class BuffClient:
+        _pay_method = "wechat"
+
+        def get_sell_orders(self, *_args):
+            return [{"id": f"fresh-{i}", "price": price} for i in range(available)]
+
+        def try_batch_buy(self, goods, game, orders, unit_price, quantity, **_kwargs):
+            attempts.append(("batch", unit_price, quantity, [order["id"] for order in orders]))
+            return {"success": False, "created": False, "code": "FAIL"}
+
+        def lock_and_get_pay_url(self, game, goods, sell_id, unit_price, **_kwargs):
+            attempts.append(("single", float(unit_price), 1, [sell_id]))
+            return {"success": False, "created": False, "code": "FAIL"}
+
+    kwargs, _, _ = _checkout_args()
+    kwargs["target_balance"] = budget
+    steps.lock_and_confirm_payment(BuffClient(), item, config, **kwargs)
+    assert len(attempts) == 1
+    mode, unit_price, quantity, sell_ids = attempts[0]
+    assert unit_price * quantity <= budget, attempts
+    assert (mode, quantity) == (expected_mode, expected_quantity)
+    assert all(sell_id.startswith("fresh-") for sell_id in sell_ids)
+
+
+@pytest.mark.parametrize("expire_snapshot", [False, True])
+def test_batch_fallback_rechecks_changed_holdings(monkeypatch, expire_snapshot):
+    clock = [1000.0]
+    monkeypatch.setattr(steps.time, "time", lambda: clock[0])
+    holdings = []
+    monkeypatch.setattr(steps, "get_purchases", lambda: list(holdings))
+    orders = [{"id": f"sell-{i}", "price": "10.00"} for i in range(3)]
+    config = _config("wechat")
+    config["_strategy_runtime"]["buy"]["enabled_modules"] = [
+        "guard.purchase_hard_cap", "guard.held_same_item_guard",
+    ]
+    config["pipeline"]["safe_purchase_hard_qty_cap"] = 2
+    batch_quantities = []
+
+    class BuffClient:
+        _pay_method = "wechat"
+
+        def try_batch_buy(self, goods, game, orders, price, quantity, **_kwargs):
+            batch_quantities.append(quantity)
+            holdings.extend([{"name": "Test Item"}, {"name": "Test Item"}])
+            if expire_snapshot:
+                clock[0] += 4
+            return {"success": False, "created": False, "code": "NOT_SUPPORTED"}
+
+        def get_sell_orders(self, *_args):
+            return orders
+
+        def lock_and_get_pay_url(self, *_args, **_kwargs):
+            raise AssertionError("new holdings exhausted the purchase cap")
+
+    kwargs, _, _ = _checkout_args()
+    result = steps.lock_and_confirm_payment(BuffClient(), _item(orders), config, **kwargs)
+    assert batch_quantities == [2]
+    assert result is steps.SKIP_NO_FAILED
+    from app.services.buff_checkout_guard import get_unresolved_checkout
+    assert get_unresolved_checkout() is None
+
+
+@pytest.mark.parametrize("cap,expected_writes", [(0, []), (1, [("fresh-low", "4.90")])])
+def test_fallback_rechecks_low_price_purchase_guard(monkeypatch, cap, expected_writes):
+    clock = [1000.0]
+    monkeypatch.setattr(steps.time, "time", lambda: clock[0])
+    item = _item([{"id": "old-1", "price": "5.10"}, {"id": "old-2", "price": "5.10"}])
+    item.update(min_price=5.10, _buff_lowest_price=5.10)
+    config = _config("wechat")
+    config["_strategy_runtime"]["buy"]["enabled_modules"] = ["guard.low_price_purchase_guard"]
+    config["pipeline"].update(safe_purchase_low_price_threshold=5, safe_purchase_low_price_hard_cap=cap)
+    writes = []
+
+    class BuffClient:
+        _pay_method = "wechat"
+
+        def try_batch_buy(self, *_args, **_kwargs):
+            clock[0] += 4
+            return {"success": False, "created": False, "code": "NOT_SUPPORTED"}
+
+        def get_sell_orders(self, *_args):
+            return [{"id": "fresh-low", "price": "4.90"}]
+
+        def lock_and_get_pay_url(self, game, goods, sell_id, price, **_kwargs):
+            writes.append((sell_id, price))
+            return {"success": False, "created": False, "code": "FAIL"}
+
+    kwargs, _, _ = _checkout_args()
+    result = steps.lock_and_confirm_payment(BuffClient(), item, config, **kwargs)
+    assert writes == expected_writes
+    if not cap:
+        assert result is steps.SKIP_NO_FAILED
+    from app.services.buff_checkout_guard import get_unresolved_checkout
+    assert get_unresolved_checkout() is None
+
+
+@pytest.mark.parametrize("guard", ["budget", "tolerance", "discount"])
+def test_fallback_refresh_preserves_guard_outcomes(monkeypatch, guard):
+    clock = [1000.0]
+    monkeypatch.setattr(steps.time, "time", lambda: clock[0])
+    item = _item([{"id": "old-1", "price": "10.00"}, {"id": "old-2", "price": "10.00"}])
+    config = _config("wechat")
+    price = "20.01" if guard == "budget" else "11.00" if guard == "tolerance" else "10.40"
+    if guard == "budget":
+        config["buff"]["price_tolerance"] = 100
+    if guard == "discount":
+        config["_strategy_runtime"]["buy"]["enabled_modules"] = ["buy.steam_sell_depth", "guard.max_discount"]
+        config["pipeline"]["max_discount"] = 0.59
+        item["_steam_sell_data"] = {"smart_price": 20.0, "sell_orders": [(20.0, 10)]}
+        monkeypatch.setattr(steps, "_adjust_ref_price_for_daily_high", lambda name, price, *args, **kwargs: price)
+
+    class BuffClient:
+        _pay_method = "wechat"
+
+        def try_batch_buy(self, *_args, **_kwargs):
+            clock[0] += 4
+            return {"success": False, "created": False, "code": "NOT_SUPPORTED"}
+
+        def get_sell_orders(self, *_args):
+            return [{"id": "fresh-1", "price": price}]
+
+        def lock_and_get_pay_url(self, *_args, **_kwargs):
+            raise AssertionError("rejected refresh must not lock an order")
+
+    kwargs, _, _ = _checkout_args()
+    kwargs["target_balance"] = 20
+    result = steps.lock_and_confirm_payment(BuffClient(), item, config, **kwargs)
+    expected = {"budget": steps.TARGET_REACHED, "tolerance": None,
+                "discount": steps.SKIP_VERIFICATION_FAILED}
+    assert result is expected[guard]
+    from app.services.buff_checkout_guard import get_unresolved_checkout
+    assert get_unresolved_checkout() is None
 
 
 def test_guarded_runner_sets_error_for_unhandled_exception(monkeypatch):

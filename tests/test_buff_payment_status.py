@@ -318,55 +318,29 @@ def test_single_order_matches_created_at_milliseconds(monkeypatch):
     assert buyer.check_payment_status("order-1", 123, start, False) is True
 
 
-def test_batch_order_keeps_qrcode_fallback(monkeypatch):
-    from buff.buyer import API_BATCH_WX_PAY_QRCODE, API_HISTORY, BuffBuyer
+@pytest.mark.parametrize(
+    "response, expected",
+    [
+        ({"code": "OK", "data": {"state": 2}}, True),
+        ({"code": "OK", "data": {"state": "2"}}, True),
+        ({"code": "OK", "data": {"state": 1}}, None),
+        ({"code": "FAIL", "data": {}}, None),
+    ],
+)
+def test_batch_order_only_confirms_server_paid_state(monkeypatch, response, expected):
+    from buff.buyer import API_BATCH_CHECK_STATE, BuffBuyer
 
     buyer = BuffBuyer("csrf_token=abc")
-
-    def fake_request(method, url, **kwargs):
-        if url == API_HISTORY:
-            return {"code": "OK", "data": {"items": []}}
-        if url == API_BATCH_WX_PAY_QRCODE:
-            return {"code": "FAIL"}
-        return {"code": "OK", "data": {}}
-
-    monkeypatch.setattr(buyer, "_make_request", fake_request)
-
-    assert buyer.check_payment_status("batch-1", 123, time.time(), True) is True
-
-
-def test_batch_order_treats_to_deliver_history_item_as_paid(monkeypatch):
-    from buff.buyer import API_BATCH_WX_PAY_QRCODE, API_HISTORY, BuffBuyer
-
-    buyer = BuffBuyer("csrf_token=abc")
-    start = time.time()
     calls = []
 
     def fake_request(method, url, **kwargs):
-        calls.append(url)
-        if url == API_HISTORY:
-            state = (kwargs.get("params") or {}).get("state", "")
-            if state == "":
-                return {
-                    "code": "OK",
-                    "data": {
-                        "items": [{
-                            "id": "bill-order-1",
-                            "state": "TO_DELIVER",
-                            "goods_id": 123,
-                            "created_at": int(start * 1000),
-                        }]
-                    },
-                }
-            return {"code": "OK", "data": {"items": []}}
-        if url == API_BATCH_WX_PAY_QRCODE:
-            return {"code": "OK", "data": {"url": "https://pay.example/qrcode"}}
-        return {"code": "OK", "data": {}}
+        calls.append((method, url, kwargs.get("params")))
+        return response
 
     monkeypatch.setattr(buyer, "_make_request", fake_request)
 
-    assert buyer.check_payment_status("batch-1", 123, start, True) is True
-    assert API_BATCH_WX_PAY_QRCODE not in calls
+    assert buyer.check_payment_status("batch-1", 123, time.time(), True) is expected
+    assert calls == [("GET", API_BATCH_CHECK_STATE, {"batch_buy_id": "batch-1"})]
 
 
 def test_auto_detect_not_found_does_not_confirm_failure(monkeypatch):
