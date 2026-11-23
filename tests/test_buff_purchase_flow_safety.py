@@ -853,7 +853,7 @@ def test_unknown_write_result_stops_entire_pipeline_with_explicit_status(monkeyp
         "pick_stable_item",
         lambda *_args, **_kwargs: (item, set()),
     )
-    monkeypatch.setattr(pipeline_module, "SteamClient", lambda: object())
+    monkeypatch.setattr(pipeline_module, "SteamClient", lambda **_kwargs: object())
     monkeypatch.setattr(pipeline_module, "StabilityAnalyzer", lambda **_kwargs: object())
 
     pipeline_module._run_pipeline({"pipeline": {"target_balance": 100}})

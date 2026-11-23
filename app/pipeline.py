@@ -43,6 +43,7 @@ from buff import (
     BuffRequestBlocked,
     BuffVerificationRequired,
 )
+from steam.request_policy import SelectionMarketRetriesExhausted
 from steamdt.models import SteamDTQueryParams
 from utils.delay import jittered_sleep
 from utils.money import USD_TO_CNY_DEFAULT, list_price_display_to_cents
@@ -161,24 +162,28 @@ def _process_deals_for_target(
             return acc, bought, TIME_WINDOW_CLOSED
 
         ctx.set_status("running", "CHECKING_STABILITY", progress_total=n_filtered, progress_done=0, progress_item="")
-        chosen, new_stability_failed = pick_stable_item(
-            filtered, cfg, steam_client, analyzer, ctx.is_stop_requested,
-            log_fn=ctx.log,
-            exclude_goods_ids=failed_goods_ids | skipped_this_round | stability_failed_this_round,
-            buff_client=buyer,
-        )
+        try:
+            chosen, new_stability_failed = pick_stable_item(
+                filtered, cfg, steam_client, analyzer, ctx.is_stop_requested,
+                log_fn=ctx.log,
+                exclude_goods_ids=failed_goods_ids | skipped_this_round | stability_failed_this_round,
+                buff_client=buyer,
+                is_time_allowed=time_window_is_open,
+            )
+        except SelectionMarketRetriesExhausted as exc:
+            ctx.log(str(exc), "error", category="steam")
+            ctx.set_status("error", "STEAM_RATE_LIMITED")
+            return acc, bought, True
         stability_failed_this_round |= new_stability_failed
 
         if ctx.is_stop_requested():
             ctx.set_status("stopped", "已停止")
             return acc, bought, True
-        if chosen is None:
-            break
-        if acc >= target:
-            break
         if not time_window_is_open():
-            ctx.log("候选分析完成时购买时间窗已关闭，本件不下单", "info", category="pipeline")
+            ctx.log("候选分析期间购买时间窗已关闭，本件不下单", "info", category="pipeline")
             return acc, bought, TIME_WINDOW_CLOSED
+        if chosen is None or acc >= target:
+            break
 
         ctx.log(f"购买本件: {chosen['name']} goods_id={chosen['goods_id']} 参考价={chosen.get('min_price')}", "info", category="buff")
 
@@ -354,7 +359,7 @@ def _run_pipeline(config: dict) -> None:
             category="pipeline",
         )
 
-    steam_client = SteamClient()
+    steam_client = SteamClient(selection_reads=True)
     analyzer = StabilityAnalyzer(usd_to_cny=USD_TO_CNY_DEFAULT)
     failed_goods_ids_ttl: dict = {}
 

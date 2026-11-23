@@ -31,9 +31,11 @@ def parse_retry_after(value: object, *, now: Optional[float] = None) -> float:
 class MarketCooldown:
     """Share an endpoint's 429 cooldown across tasks, without blocking a thread."""
 
-    def __init__(self, clock: Optional[Callable[[], float]] = None):
+    def __init__(self, clock: Optional[Callable[[], float]] = None, *, exponential: bool = False):
         self._clock = clock or time.monotonic
         self._until = 0.0
+        self._exponential = exponential
+        self._consecutive = 0
         self._lock = threading.Lock()
 
     def remaining(self) -> float:
@@ -43,6 +45,30 @@ class MarketCooldown:
     def defer(self, retry_after: object = None) -> float:
         delay = parse_retry_after(retry_after)
         with self._lock:
+            if self._exponential:
+                self._consecutive = min(self._consecutive + 1, 5)
+                if retry_after is None or not str(retry_after).strip():
+                    delay = min(900.0, DEFAULT_RATE_LIMIT_SECONDS * 2 ** (self._consecutive - 1))
             now = self._clock()
             self._until = max(self._until, now + delay)
             return self._until - now
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._consecutive = 0
+
+
+selection_market_cooldown = MarketCooldown(exponential=True)
+
+
+class SelectionMarketLimited(Exception):
+    """选品读取收到 Steam 429，或因已生效的冷却而未发送。"""
+
+    def __init__(self, remaining: float, *, observed: bool = False, retry_after: Optional[str] = None):
+        self.observed = observed
+        self.retry_after = retry_after
+        super().__init__(f"Steam 市场限流，剩余约 {math.ceil(remaining)} 秒")
+
+
+class SelectionMarketRetriesExhausted(Exception):
+    """当前候选连续收到三次 Steam 市场限流。"""

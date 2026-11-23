@@ -10,6 +10,8 @@ from urllib.parse import urlencode
 
 from steam.client import build_listing_url
 from utils.delay import jittered_sleep
+from steam.request_policy import SelectionMarketLimited
+from steam.session import SelectionMarketSession
 from utils.proxy_manager import get_proxy_manager
 from utils.money import USD_TO_CNY_DEFAULT
 from app.database import db_get_item_nameid, db_set_item_nameid
@@ -466,6 +468,8 @@ def _fetch_ssr_sell_orders_cny(
                 last_error = parse_error or "Steam 新版页面订单簿解析失败"
                 break
             last_error = _http_error_reason("Steam 新版市场页面", r.status_code)
+        except SelectionMarketLimited:
+            raise
         except Exception as e:
             last_error = _format_request_error("Steam 新版市场页面请求异常", e)
         if attempt < 2:
@@ -548,6 +552,8 @@ def _fetch_action_orderbook_cny(
                 last_error = parse_error or "Steam 新版 orderbook 接口订单簿解析失败"
                 break
             last_error = _http_error_reason("Steam 新版 orderbook 接口", r.status_code)
+        except SelectionMarketLimited:
+            raise
         except Exception as e:
             last_error = _format_request_error("Steam 新版 orderbook 接口请求异常", e)
         if attempt < 2:
@@ -595,6 +601,8 @@ def get_item_nameid(
                 last_error = "Steam 市场页面未包含旧版 item_nameid 字段（可能是 Steam 新版页面、物品名不正确或页面被风控）"
                 break
             last_error = _http_error_reason("Steam 市场页面", r.status_code)
+        except SelectionMarketLimited:
+            raise
         except Exception as e:
             last_error = _format_request_error("Steam 市场页面请求异常", e)
             logger.debug("获取item_nameid失败 (attempt=%d/3) proxies=%s, error=%s", attempt+1, proxies, type(e).__name__)
@@ -674,6 +682,8 @@ def fetch_item_orders_histogram(
             else:
                 last_error = _http_error_reason("Steam 直方图接口", r.status_code)
                 logger.debug("直方图 HTTP %s (attempt=%d)", r.status_code, attempt+1)
+        except SelectionMarketLimited:
+            raise
         except Exception as e:
             last_error = _format_request_error("Steam 直方图请求异常", e)
             logger.debug("直方图失败 (attempt=%d/3) proxy=%s err=%s: %s", attempt+1, effective_proxies is not None, type(e).__name__, str(e)[:60])
@@ -741,6 +751,8 @@ def get_sell_orders_cny(
         usd_to_cny_rate=usd_to_cny_rate,
     )
     if ssr_result:
+        if isinstance(session, SelectionMarketSession):
+            session.record_success()
         if use_cache:
             with _sell_orders_cache_lock:
                 _sell_orders_cache[key] = (ssr_result, time.time() + _SELL_ORDERS_TTL)
@@ -752,6 +764,8 @@ def get_sell_orders_cny(
         usd_to_cny_rate=usd_to_cny_rate,
     )
     if action_result:
+        if isinstance(session, SelectionMarketSession):
+            session.record_success()
         if use_cache:
             with _sell_orders_cache_lock:
                 _sell_orders_cache[key] = (action_result, time.time() + _SELL_ORDERS_TTL)
@@ -804,6 +818,8 @@ def get_sell_orders_cny(
             pass
     sell_orders = _parse_sell_order_graph(data.get("sell_order_graph", []))
     result = {"lowest_price": lowest_price, "sell_orders": sell_orders}
+    if isinstance(session, SelectionMarketSession):
+        session.record_success()
     if use_cache:
         with _sell_orders_cache_lock:
             _sell_orders_cache[key] = (result, time.time() + _SELL_ORDERS_TTL)

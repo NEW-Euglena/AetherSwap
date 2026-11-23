@@ -23,10 +23,13 @@ class SteamClient:
         timeout_sec: int = steam_timeout,
         cache_ttl: int = _history_cache_ttl,
         cache_max: int = _history_cache_max,
+        *,
+        selection_reads: bool = False,
     ) -> None:
         self._timeout = timeout_sec
         self._cache_ttl = cache_ttl
         self._cache_max = cache_max
+        self._selection_reads = selection_reads
     def fetch_history(
         self,
         market_hash_name: str,
@@ -37,7 +40,7 @@ class SteamClient:
         cookies = (cred.get("cookies") or "").strip() or None
         identity = f"{cred.get('steam_id') or ''}\0{cookies or ''}"
         account_key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
-        key = (account_key, market_hash_name, app_id, return_currency)
+        key = (account_key, market_hash_name, app_id, return_currency, self._selection_reads)
         # Serialize cache misses so concurrent buy/sell tasks cannot duplicate a
         # failed request or race past a newly established endpoint cooldown.
         with _history_lock:
@@ -49,12 +52,12 @@ class SteamClient:
                     return data
                 del _history_cache[key]
             remaining = _history_cooldown.remaining()
-            if remaining > 0:
+            if not self._selection_reads and remaining > 0:
                 from app.state import log
                 log(f"[SteamClient] 历史接口冷却中，约 {remaining:.0f}s 后可重试，本次未发送请求", "debug", category="steam")
                 return None
             result = self._fetch_history_impl(market_hash_name, app_id, return_currency, cookies)
-            if result is None and _history_cooldown.remaining() > 0:
+            if not self._selection_reads and result is None and _history_cooldown.remaining() > 0:
                 return None
             if len(_history_cache) >= max(1, self._cache_max):
                 oldest = min(_history_cache.items(), key=lambda x: x[1][1])
@@ -86,6 +89,7 @@ class SteamClient:
                     cookies=cookies,
                     proxies=proxies,
                     raise_on_error=True,
+                    selection_reads=self._selection_reads,
                 )
             except SteamHistoryError as exc:
                 from app.state import log

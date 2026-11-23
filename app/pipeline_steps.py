@@ -5,6 +5,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from math import ceil
 from decimal import Decimal, ROUND_HALF_UP
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
@@ -13,6 +14,11 @@ from app.services.iflow_client import fetch_iflow_rows as _fetch_iflow_rows
 from app.state import get_purchases, set_status
 from app.strategy_engine import evaluate_strategy_runtime_modules, is_strategy_module_enabled
 from app.services.steam_client import SteamClient
+from steam.request_policy import (
+    SelectionMarketLimited,
+    SelectionMarketRetriesExhausted,
+    selection_market_cooldown,
+)
 from app.services.analysis_client import StabilityAnalyzer
 from app.services.buff_client import count_lowest_price_orders, first_order_at_price
 from app.services.buff_checkout_guard import (
@@ -255,6 +261,7 @@ def _fetch_steam_sell_data(
     app_id: int = 730,
     *,
     return_error: bool = False,
+    selection_reads: bool = False,
 ):
     from app.config_loader import get_steam_credentials
     from steam.session import create_market_session
@@ -275,19 +282,19 @@ def _fetch_steam_sell_data(
         reason = "Steam 凭据缺失: " + "、".join(missing)
         return (None, reason) if return_error else None
     try:
-        session = create_market_session(cookies, steam_id)
         cfg = config.get("pipeline", {})
         wall_volume = int(cfg.get("sell_price_wall_volume", 20))
         max_ignore = int(cfg.get("sell_price_max_ignore_volume", 4))
         usd_to_cny_rate = float(cfg.get("usd_to_cny", 7.2))
-        orders_result = get_sell_orders_cny(
-            session,
-            name,
-            app_id=app_id,
-            request_delay=1.0,
-            return_error=True,
-            usd_to_cny_rate=usd_to_cny_rate,
-        )
+        with create_market_session(cookies, steam_id, selection_reads=selection_reads) as session:
+            orders_result = get_sell_orders_cny(
+                session,
+                name,
+                app_id=app_id,
+                request_delay=1.0,
+                return_error=True,
+                usd_to_cny_rate=usd_to_cny_rate,
+            )
         if isinstance(orders_result, tuple) and len(orders_result) == 2:
             result, reason = orders_result
         else:
@@ -309,6 +316,8 @@ def _fetch_steam_sell_data(
             return (None, reason) if return_error else None
         data = {"sell_orders": orders, "smart_price": price}
         return (data, None) if return_error else data
+    except SelectionMarketLimited:
+        raise
     except Exception as e:
         detail = str(e).strip()
         if len(detail) > 120:
@@ -357,13 +366,15 @@ def _adjust_ref_price_for_daily_high(
     config: dict,
     log_fn: Optional[Callable[[str, str], None]],
     app_id: int = 730,
+    *,
+    steam_client: Optional[SteamClient] = None,
 ) -> float:
     from utils.time import parse_steam_history_date
     from utils.money import apply_currency, USD_TO_CNY_DEFAULT
     name = (market_hash_name or "").strip()
     if not name or current_ref_price <= 0:
         return current_ref_price
-    steam_client = SteamClient()
+    steam_client = steam_client if steam_client is not None else SteamClient()
     raw = steam_client.fetch_history(name, app_id=app_id, return_currency=True)
     if not raw:
         return current_ref_price
@@ -757,6 +768,38 @@ def _passes_custom_buy_modules(
     return blocking is None
 
 
+_SELECTION_INTERRUPTED = object()
+_MAX_SELECTION_MARKET_429 = 3
+
+
+def _read_candidate_market(read, should_pause, progress, log_fn):
+    """在同一候选的读取步骤等待限流解除，并按真实 429 限制重试。"""
+    limits = 0
+    while not should_pause():
+        try:
+            return read()
+        except SelectionMarketLimited as exc:
+            limits += int(exc.observed)
+            if should_pause():
+                break
+            if limits >= _MAX_SELECTION_MARKET_429:
+                raise SelectionMarketRetriesExhausted(
+                    f"Steam 市场连续 {_MAX_SELECTION_MARKET_429} 次 HTTP 429，选品已停止"
+                ) from None
+            remaining = selection_market_cooldown.remaining()
+            if remaining > 0 and log_fn:
+                log_fn(f"[稳定性] Steam 市场限流，约 {ceil(remaining)} 秒后继续当前候选", "warn")
+            while remaining > 0 and not should_pause():
+                set_status("running", step="STEAM_COOLDOWN", **{
+                    **progress, "progress_item": f"{progress['progress_item']} · {ceil(remaining)} 秒",
+                })
+                time.sleep(min(1.0, remaining))
+                remaining = selection_market_cooldown.remaining()
+            if not should_pause():
+                set_status("running", step="STABILITY_CHECK", **progress)
+    return _SELECTION_INTERRUPTED
+
+
 def pick_stable_item(
     filtered: List[Dict[str, Any]],
     config: dict,
@@ -766,6 +809,7 @@ def pick_stable_item(
     log_fn: Optional[Callable[[str, str], None]] = None,
     exclude_goods_ids: Optional[set] = None,
     buff_client: Optional[Any] = None,
+    is_time_allowed: Optional[Callable[[], bool]] = None,
 ) -> Tuple[Optional[Dict[str, Any]], Set[int]]:
     # 遍历候选饰品，返回第一个通过所有检测的
     # 检测顺序: Buff价格预检 → Steam卖单 → 卖压 → 最高折扣 → 历史稳定性
@@ -791,8 +835,11 @@ def pick_stable_item(
         trend_quality_enabled,
         price_position_enabled,
     ))
+    def should_pause():
+        return is_stop_requested() or (is_time_allowed is not None and not is_time_allowed())
+
     for i, item in enumerate(filtered):
-        if is_stop_requested():
+        if should_pause():
             return None, stability_failed
         gid = item.get("goods_id")
         item_key = item.get("goods_id")
@@ -811,7 +858,17 @@ def pick_stable_item(
         _short = (name[:30] + "…") if len(name) > 30 else name
         item_log = (lambda msg, level, _n=_short: log_fn(f"[{_n}] {msg}", level)) if log_fn else None
         next_name = filtered[i + 1].get("name", "") if i + 1 < n else ""
-        set_status("running", step="STABILITY_CHECK", progress_total=n, progress_done=i, progress_item=f"({i+1}/{n}) {name}", next_progress_item=f"({i+2}/{n}) {next_name}" if next_name else "")
+        progress = {
+            "progress_total": n,
+            "progress_done": i,
+            "progress_item": f"({i+1}/{n}) {name}",
+            "next_progress_item": f"({i+2}/{n}) {next_name}" if next_name else "",
+        }
+        set_status("running", step="STABILITY_CHECK", **progress)
+
+        def read_market(read):
+            return _read_candidate_market(read, should_pause, progress, item_log)
+
         pipeline_cfg = config.get("pipeline", {})
         verbose_detail = bool(pipeline_cfg.get("verbose_debug", False))
         if item_log and verbose_detail:
@@ -838,9 +895,12 @@ def pick_stable_item(
             # 策略通过之后，避免对注定淘汰的候选消耗请求。
             if item_log and verbose_detail:
                 item_log("[稳定性] 拉取 Steam 卖单深度…", "debug")
-            steam_sell_data, steam_error = _fetch_steam_sell_data(
-                market_hash_name, config, app_id=730, return_error=True
-            )
+            orders = read_market(lambda: _fetch_steam_sell_data(
+                market_hash_name, config, app_id=730, return_error=True, selection_reads=True,
+            ))
+            if orders is _SELECTION_INTERRUPTED:
+                return None, stability_failed
+            steam_sell_data, steam_error = orders
             if not steam_sell_data:
                 if item_log:
                     item_log(f"[稳定性] 预检未通过: 无法获取 Steam 卖单信息：{steam_error or '未知原因'}", "warn")
@@ -866,9 +926,11 @@ def pick_stable_item(
             # 3. 计算智能价和预估比例
             smart_price = steam_sell_data.get("smart_price")
             if smart_price is not None and smart_price > 0 and plan_price and plan_price > 0:
-                ref_price_est = _adjust_ref_price_for_daily_high(
-                    market_hash_name, smart_price, config, log_fn, app_id=730
-                )
+                ref_price_est = read_market(lambda: _adjust_ref_price_for_daily_high(
+                    market_hash_name, smart_price, config, log_fn, app_id=730, steam_client=steam_client,
+                ))
+                if ref_price_est is _SELECTION_INTERRUPTED:
+                    return None, stability_failed
                 est_ratio = (plan_price / ref_price_est) * STEAM_FEE_FACTOR
 
             # 4. 最高折扣检测
@@ -882,7 +944,11 @@ def pick_stable_item(
 
         if not history_analysis_enabled:
             if smart_price is None and not need_steam:
-                steam_sell_data = _fetch_steam_sell_data(market_hash_name, config, app_id=730)
+                steam_sell_data = read_market(lambda: _fetch_steam_sell_data(
+                    market_hash_name, config, app_id=730, selection_reads=True,
+                ))
+                if steam_sell_data is _SELECTION_INTERRUPTED:
+                    return None, stability_failed
                 smart_price = steam_sell_data.get("smart_price") if steam_sell_data else None
             item["_steam_sell_data"] = steam_sell_data
             if not _passes_custom_buy_modules(
@@ -917,7 +983,9 @@ def pick_stable_item(
         # 6. 拉历史K线 + 稳定性分析
         if item_log:
             item_log("[稳定性] 拉取历史价格…", "info")
-        raw = steam_client.fetch_history(market_hash_name, return_currency=True)
+        raw = read_market(lambda: steam_client.fetch_history(market_hash_name, return_currency=True))
+        if raw is _SELECTION_INTERRUPTED:
+            return None, stability_failed
         if raw and isinstance(raw, dict):
             history = raw.get("history")
             currency = raw.get("currency")
@@ -980,7 +1048,11 @@ def pick_stable_item(
                 jittered_sleep(failure_delay)
             continue
         if smart_price is None and not need_steam:
-            steam_sell_data = _fetch_steam_sell_data(market_hash_name, config, app_id=730)
+            steam_sell_data = read_market(lambda: _fetch_steam_sell_data(
+                market_hash_name, config, app_id=730, selection_reads=True,
+            ))
+            if steam_sell_data is _SELECTION_INTERRUPTED:
+                return None, stability_failed
             smart_price = steam_sell_data.get("smart_price") if steam_sell_data else None
         item["_steam_sell_data"] = steam_sell_data
         if not _passes_custom_buy_modules(

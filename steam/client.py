@@ -5,7 +5,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import parse_qs, quote, unquote, urlparse
 import requests
 import urllib3
-from .request_policy import parse_retry_after
+from .request_policy import SelectionMarketLimited, parse_retry_after
+from .session import SelectionMarketSession
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 CURRENCY_CNY = "CNY"
 CURRENCY_USD = "USD"
@@ -300,6 +301,7 @@ def fetch_history(
     cookies: Optional[Union[dict, str]] = None,
     return_currency: bool = False,
     raise_on_error: bool = False,
+    selection_reads: bool = False,
 ) -> Union[Optional[list], Optional[dict]]:
     encoded = quote(market_hash_name, safe="")
     url = f"https://steamcommunity.com/market/pricehistory/?appid={app_id}&market_hash_name={encoded}"
@@ -314,14 +316,13 @@ def fetch_history(
     if isinstance(cookies, str):
         cookies = _parse_cookie_str(cookies)
     try:
-        resp = requests.get(
-            url,
-            headers=h,
-            verify=verify,
-            proxies=proxies,
-            cookies=cookies,
-            timeout=timeout,
-        )
+        if selection_reads:
+            with SelectionMarketSession(verify=verify) as session:
+                resp = session.get(url, headers=h, proxies=proxies, cookies=cookies, timeout=timeout)
+        else:
+            resp = requests.get(
+                url, headers=h, verify=verify, proxies=proxies, cookies=cookies, timeout=timeout,
+            )
         if resp.status_code != 200:
             raise SteamHistoryError("http_error", resp)
         try:
@@ -335,6 +336,8 @@ def fetch_history(
         if not isinstance(data.get("prices"), list):
             raise SteamHistoryError("invalid_prices", resp)
         history = data["prices"]
+        if selection_reads:
+            session.record_success()
         if return_currency:
             currency_clue = data.get("price_prefix", "") + data.get("price_suffix", "")
             currency = detect_currency(currency_clue)
@@ -342,6 +345,8 @@ def fetch_history(
                 currency = detect_currency(resp.text)
             return {"history": history, "currency": currency}
         return history
+    except SelectionMarketLimited:
+        raise
     except SteamHistoryError:
         if raise_on_error:
             raise
