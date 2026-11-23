@@ -40,17 +40,19 @@ class SteamClient:
         cookies = (cred.get("cookies") or "").strip() or None
         identity = f"{cred.get('steam_id') or ''}\0{cookies or ''}"
         account_key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
-        key = (account_key, market_hash_name, app_id, return_currency, self._selection_reads)
+        key = (account_key, market_hash_name, app_id, return_currency)
+        # 同一账号的成功数据可供选品和复核复用，失败缓存按传输方式隔离。
+        failure_key = (*key, self._selection_reads)
         # Serialize cache misses so concurrent buy/sell tasks cannot duplicate a
         # failed request or race past a newly established endpoint cooldown.
         with _history_lock:
             now = time.monotonic()
-            if key in _history_cache:
-                data, stored_at = _history_cache[key]
-                ttl = self._cache_ttl if data is not None else _history_failure_ttl
-                if now - stored_at < ttl:
-                    return data
-                del _history_cache[key]
+            for cache_key, ttl in ((key, self._cache_ttl), (failure_key, _history_failure_ttl)):
+                if cache_key in _history_cache:
+                    data, stored_at = _history_cache[cache_key]
+                    if now - stored_at < ttl:
+                        return data
+                    del _history_cache[cache_key]
             remaining = _history_cooldown.remaining()
             if not self._selection_reads and remaining > 0:
                 from app.state import log
@@ -62,7 +64,7 @@ class SteamClient:
             if len(_history_cache) >= max(1, self._cache_max):
                 oldest = min(_history_cache.items(), key=lambda x: x[1][1])
                 del _history_cache[oldest[0]]
-            _history_cache[key] = (result, time.monotonic())
+            _history_cache[key if result is not None else failure_key] = (result, time.monotonic())
             return result
     def _fetch_history_impl(
         self,

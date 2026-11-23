@@ -79,6 +79,27 @@ def test_history_and_orderbook_share_cooldown_and_allow_history_cache(monkeypatc
     assert len(calls) == 3
 
 
+def test_history_success_cache_is_shared_but_failure_is_scoped_to_transport(monkeypatch):
+    requested = []
+    prices = [["Nov 22 2026 06: +0", 2.47, "484"]]
+
+    def fetch(steam, *_args):
+        requested.append(steam._selection_reads)
+        return prices if steam._selection_reads else None
+
+    monkeypatch.setattr(service, "_history_cache", {})
+    monkeypatch.setattr(service, "_history_cooldown", MarketCooldown())
+    monkeypatch.setattr(service, "get_steam_credentials", lambda: {"cookies": "synthetic=test", "steam_id": "42"})
+    monkeypatch.setattr(service.SteamClient, "_fetch_history_impl", fetch)
+    legacy = service.SteamClient()
+    selected = service.SteamClient(selection_reads=True)
+
+    assert legacy.fetch_history("Test Item") is None
+    assert selected.fetch_history("Test Item") == prices
+    assert legacy.fetch_history("Test Item") == prices
+    assert requested == [False, True]
+
+
 @pytest.mark.parametrize("limited_stage", ["orderbook", "daily_high", "history"])
 def test_selecting_a_candidate_retries_only_the_limited_read(monkeypatch, cooldown, limited_stage):
     limiter, _ = cooldown
